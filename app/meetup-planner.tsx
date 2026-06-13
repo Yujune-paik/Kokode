@@ -1,0 +1,737 @@
+"use client";
+
+import {
+  Clipboard,
+  Copy,
+  MapPin,
+  Plus,
+  Route,
+  Search,
+  Share2,
+  Trash2,
+  UsersRound
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+
+type Priority = "balanced" | "fast" | "fair";
+
+type Person = {
+  id: string;
+  name: string;
+  origin: string;
+};
+
+type AppState = {
+  destination: string;
+  departureTime: string;
+  priority: Priority;
+  people: Person[];
+};
+
+type RouteResult = {
+  person: Person;
+  duration: number;
+  arrivalTime: number;
+  path: string[];
+};
+
+type Candidate = {
+  station: string;
+  gatherTime: number;
+  destinationTime: number;
+  onwardDuration: number;
+  onwardPath: string[];
+  waitingTotal: number;
+  score: number;
+  routes: RouteResult[];
+};
+
+type DijkstraResult = {
+  distances: Map<string, number>;
+  previous: Map<string, string>;
+};
+
+type LiffLike = {
+  init: (options: { liffId: string }) => Promise<void>;
+  isInClient: () => boolean;
+  isApiAvailable: (apiName: string) => boolean;
+  shareTargetPicker: (messages: Array<{ type: "text"; text: string }>) => Promise<unknown>;
+};
+
+const EDGES: Array<[string, string, number]> = [
+  ["ひばりヶ丘", "池袋", 18],
+  ["ひばりヶ丘", "小竹向原", 21],
+  ["小竹向原", "新宿三丁目", 13],
+  ["小竹向原", "池袋", 8],
+  ["池袋", "新宿三丁目", 9],
+  ["池袋", "上野", 17],
+  ["新宿三丁目", "新宿", 2],
+  ["新宿三丁目", "渋谷", 7],
+  ["新宿", "渋谷", 5],
+  ["新宿", "東京", 14],
+  ["渋谷", "表参道", 2],
+  ["表参道", "大手町", 15],
+  ["渋谷", "横浜", 25],
+  ["横浜", "品川", 17],
+  ["品川", "東京", 8],
+  ["東京", "大手町", 2],
+  ["東京", "上野", 8],
+  ["中目黒", "渋谷", 4],
+  ["中目黒", "六本木", 9],
+  ["六本木", "大手町", 13],
+  ["吉祥寺", "新宿", 16],
+  ["吉祥寺", "渋谷", 18],
+  ["立川", "新宿", 27],
+  ["立川", "吉祥寺", 16],
+  ["浦和", "池袋", 20],
+  ["浦和", "上野", 22],
+  ["北千住", "上野", 10],
+  ["北千住", "大手町", 18],
+  ["舞浜", "東京", 16],
+  ["舞浜", "新木場", 6],
+  ["新木場", "渋谷", 24],
+  ["自由が丘", "渋谷", 10],
+  ["自由が丘", "横浜", 21]
+];
+
+const PRIORITY_LABELS: Record<Priority, string> = {
+  balanced: "移動時間バランス",
+  fast: "目的地に早く着く",
+  fair: "待ち時間少なめ"
+};
+
+const DEFAULT_STATE: AppState = {
+  destination: "渋谷",
+  departureTime: "18:00",
+  priority: "balanced",
+  people: [
+    { id: "p1", name: "自分", origin: "ひばりヶ丘" },
+    { id: "p2", name: "相手", origin: "横浜" }
+  ]
+};
+
+const graph = buildGraph(EDGES);
+const stationNames = Array.from(graph.keys()).sort((a, b) => a.localeCompare(b, "ja"));
+
+export function MeetupPlanner() {
+  const [destination, setDestination] = useState(DEFAULT_STATE.destination);
+  const [departureTime, setDepartureTime] = useState(DEFAULT_STATE.departureTime);
+  const [priority, setPriority] = useState<Priority>(DEFAULT_STATE.priority);
+  const [people, setPeople] = useState<Person[]>(DEFAULT_STATE.people);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [toast, setToast] = useState("");
+  const [liffClient, setLiffClient] = useState<LiffLike | null>(null);
+  const [liffStatus, setLiffStatus] = useState("Webアプリ");
+
+  const appState = useMemo<AppState>(
+    () => ({ destination, departureTime, priority, people }),
+    [destination, departureTime, people, priority]
+  );
+
+  useEffect(() => {
+    const restored = restoreStateFromUrl();
+    if (restored) {
+      setDestination(restored.destination);
+      setDepartureTime(restored.departureTime);
+      setPriority(restored.priority);
+      setPeople(restored.people);
+      setHasSearched(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
+    if (!liffId) {
+      setLiffStatus("LIFF ID未設定");
+      return;
+    }
+
+    const effectiveLiffId = liffId;
+    let cancelled = false;
+
+    async function initializeLiff() {
+      try {
+        const module = await import("@line/liff");
+        const liff = module.default as LiffLike;
+        await liff.init({ liffId: effectiveLiffId });
+        if (!cancelled) {
+          setLiffClient(liff);
+          setLiffStatus(liff.isInClient() ? "LIFFで起動中" : "Webで起動中");
+        }
+      } catch {
+        if (!cancelled) {
+          setLiffStatus("LIFF初期化失敗");
+        }
+      }
+    }
+
+    initializeLiff();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const validationMessage = validateState(appState);
+  const candidates = useMemo(
+    () => (hasSearched && !validationMessage ? calculateCandidates(appState).slice(0, 5) : []),
+    [appState, hasSearched, validationMessage]
+  );
+
+  function updatePerson(id: string, patch: Partial<Person>) {
+    setPeople((current) =>
+      current.map((person) => (person.id === id ? { ...person, ...patch } : person))
+    );
+  }
+
+  function addPerson() {
+    setPeople((current) => [
+      ...current,
+      { id: `p${Date.now()}`, name: `参加者${current.length + 1}`, origin: "" }
+    ]);
+  }
+
+  function removePerson(id: string) {
+    setPeople((current) => current.filter((person) => person.id !== id));
+  }
+
+  function handleSearch() {
+    setHasSearched(true);
+    setToast("");
+    if (!validateState(appState)) {
+      replaceUrlState(appState);
+    }
+  }
+
+  async function handleShare(candidate: Candidate) {
+    const text = formatShareText(candidate, appState);
+    setToast("");
+
+    try {
+      if (
+        liffClient?.isInClient() &&
+        liffClient.isApiAvailable("shareTargetPicker")
+      ) {
+        await liffClient.shareTargetPicker([{ type: "text", text }]);
+        setToast("LINEで共有しました");
+        return;
+      }
+
+      if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+        await navigator.share({
+          title: `集合先：${candidate.station}`,
+          text
+        });
+        setToast("共有シートを開きました");
+        return;
+      }
+
+      await copyToClipboard(text);
+      setToast("共有文をコピーしました");
+    } catch {
+      await copyToClipboard(text);
+      setToast("共有文をコピーしました");
+    }
+  }
+
+  async function handleCopyUrl() {
+    const url = buildShareableUrl(appState);
+    replaceUrlState(appState);
+    await copyToClipboard(url);
+    setToast("検索条件URLをコピーしました");
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div className="brand-row">
+          <div className="brand">
+            <div className="brand-mark" aria-hidden="true">
+              <Route size={22} />
+            </div>
+            <div>
+              <h1>集合先ナビ</h1>
+              <p>出発地が違うメンバーの集合しやすい駅を探します。</p>
+            </div>
+          </div>
+          <span className="status-pill">
+            <UsersRound size={15} />
+            {liffStatus}
+          </span>
+        </div>
+      </header>
+
+      <div className="layout-grid">
+        <section className="input-panel" aria-label="検索条件">
+          <div className="field-grid">
+            <div className="field">
+              <label htmlFor="destination">行き先</label>
+              <input
+                id="destination"
+                className="input"
+                list="station-list"
+                value={destination}
+                onChange={(event) => setDestination(event.target.value)}
+                placeholder="例：渋谷"
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="departure-time">出発時刻</label>
+              <input
+                id="departure-time"
+                className="input"
+                type="time"
+                value={departureTime}
+                onChange={(event) => setDepartureTime(event.target.value)}
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="priority">優先条件</label>
+              <select
+                id="priority"
+                className="select"
+                value={priority}
+                onChange={(event) => setPriority(event.target.value as Priority)}
+              >
+                {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="people-list">
+            <div className="section-label">現在地</div>
+            {people.map((person, index) => (
+              <div className="person-row" key={person.id}>
+                <input
+                  className="input"
+                  aria-label={`${index + 1}人目の名前`}
+                  value={person.name}
+                  onChange={(event) => updatePerson(person.id, { name: event.target.value })}
+                  placeholder="名前"
+                />
+                <div className="person-actions">
+                  <input
+                    className="input"
+                    list="station-list"
+                    aria-label={`${person.name || index + 1 + "人目"}の現在地`}
+                    value={person.origin}
+                    onChange={(event) => updatePerson(person.id, { origin: event.target.value })}
+                    placeholder="例：横浜"
+                  />
+                  <button
+                    className="btn btn-danger"
+                    type="button"
+                    onClick={() => removePerson(person.id)}
+                    disabled={people.length <= 1}
+                    aria-label={`${person.name || "参加者"}を削除`}
+                    title="削除"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="button-row">
+            <button className="btn btn-secondary" type="button" onClick={addPerson}>
+              <Plus size={18} />
+              参加者を追加
+            </button>
+            <button className="btn btn-primary" type="button" onClick={handleSearch}>
+              <Search size={18} />
+              集合先を探す
+            </button>
+          </div>
+
+          {hasSearched && validationMessage ? <div className="error">{validationMessage}</div> : null}
+
+          <datalist id="station-list">
+            {stationNames.map((station) => (
+              <option key={station} value={station} />
+            ))}
+          </datalist>
+        </section>
+
+        {hasSearched ? (
+          <section className="results-panel" aria-label="検索結果">
+            <div className="panel-heading">
+              <h2>候補</h2>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={handleCopyUrl}
+                disabled={Boolean(validationMessage)}
+              >
+                <Copy size={18} />
+                条件URLをコピー
+              </button>
+            </div>
+
+            <div className="toast" aria-live="polite">
+              {toast}
+            </div>
+
+            {candidates.length > 0 ? (
+              <div className="result-list">
+                {candidates.map((candidate, index) => (
+                  <article className="result-card" key={candidate.station}>
+                    <div className="result-top">
+                      <div className="station-title">
+                        <span className="rank">{index + 1}</span>
+                        <h3>{candidate.station}</h3>
+                      </div>
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        onClick={() => handleShare(candidate)}
+                      >
+                        <Share2 size={18} />
+                        この集合先を共有
+                      </button>
+                    </div>
+
+                    <div className="time-grid">
+                      <div className="metric">
+                        <span>集合目安</span>
+                        <strong>{formatClock(candidate.gatherTime)}ごろ</strong>
+                      </div>
+                      <div className="metric">
+                        <span>目的地到着目安</span>
+                        <strong>{formatClock(candidate.destinationTime)}ごろ</strong>
+                      </div>
+                    </div>
+
+                    <div className="route-list">
+                      {candidate.routes.map((route) => (
+                        <div className="route-item" key={route.person.id}>
+                          <div className="route-title">
+                            <strong>{route.person.name || "参加者"}</strong>
+                            <span>
+                              {route.duration}分 / {formatClock(route.arrivalTime)}着
+                            </span>
+                          </div>
+                          <p className="route-path">{route.path.join(" → ")}</p>
+                        </div>
+                      ))}
+                      <div className="route-item">
+                        <div className="route-title">
+                          <strong>合流後</strong>
+                          <span>約{candidate.onwardDuration}分</span>
+                        </div>
+                        <p className="route-path">{candidate.onwardPath.join(" → ")}</p>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="error">条件に合う集合先が見つかりませんでした。</div>
+            )}
+          </section>
+        ) : (
+          <aside className="empty-state">
+            <h2>駅名候補</h2>
+            <div className="station-chips">
+              {stationNames.slice(0, 14).map((station) => (
+                <span className="chip" key={station}>
+                  <MapPin size={12} />
+                  {station}
+                </span>
+              ))}
+            </div>
+          </aside>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function buildGraph(edges: Array<[string, string, number]>) {
+  const map = new Map<string, Array<{ station: string; minutes: number }>>();
+
+  for (const [from, to, minutes] of edges) {
+    if (!map.has(from)) map.set(from, []);
+    if (!map.has(to)) map.set(to, []);
+    map.get(from)?.push({ station: to, minutes });
+    map.get(to)?.push({ station: from, minutes });
+  }
+
+  return map;
+}
+
+function validateState(state: AppState) {
+  if (!state.destination.trim()) return "行き先を入力してください。";
+  if (!graph.has(state.destination.trim())) return `行き先「${state.destination}」は仮ネットワークにありません。`;
+  if (!state.departureTime) return "出発時刻を入力してください。";
+  if (state.people.length === 0) return "参加者を1人以上入力してください。";
+
+  const emptyPerson = state.people.find((person) => !person.name.trim() || !person.origin.trim());
+  if (emptyPerson) return "参加者の名前と現在地を入力してください。";
+
+  const unknownOrigin = state.people.find((person) => !graph.has(person.origin.trim()));
+  if (unknownOrigin) return `現在地「${unknownOrigin.origin}」は仮ネットワークにありません。`;
+
+  return "";
+}
+
+function calculateCandidates(state: AppState) {
+  const departureMinutes = parseClock(state.departureTime);
+  const destination = state.destination.trim();
+  const cleanPeople = state.people.map((person) => ({
+    ...person,
+    name: person.name.trim(),
+    origin: person.origin.trim()
+  }));
+  const routeMaps = cleanPeople.map((person) => dijkstra(person.origin));
+  const destinationRoutes = dijkstra(destination);
+  const candidates: Candidate[] = [];
+
+  for (const station of stationNames) {
+    const onwardDuration = destinationRoutes.distances.get(station);
+    if (onwardDuration === undefined) continue;
+
+    const routes: RouteResult[] = [];
+    let isReachable = true;
+
+    for (let index = 0; index < cleanPeople.length; index += 1) {
+      const person = cleanPeople[index];
+      const routeMap = routeMaps[index];
+      const duration = routeMap.distances.get(station);
+      if (duration === undefined) {
+        isReachable = false;
+        break;
+      }
+      routes.push({
+        person,
+        duration,
+        arrivalTime: departureMinutes + duration,
+        path: reconstructPath(routeMap.previous, person.origin, station)
+      });
+    }
+
+    if (!isReachable) continue;
+
+    const gatherTime = Math.max(...routes.map((route) => route.arrivalTime));
+    const destinationTime = gatherTime + onwardDuration;
+    const waitingTotal = routes.reduce((sum, route) => sum + (gatherTime - route.arrivalTime), 0);
+    const durations = routes.map((route) => route.duration);
+    const spread = Math.max(...durations) - Math.min(...durations);
+    const score = scoreCandidate(state.priority, destinationTime, waitingTotal, spread, gatherTime);
+
+    candidates.push({
+      station,
+      gatherTime,
+      destinationTime,
+      onwardDuration,
+      onwardPath: reconstructPath(destinationRoutes.previous, destination, station).reverse(),
+      waitingTotal,
+      score,
+      routes
+    });
+  }
+
+  return candidates.sort((a, b) => a.score - b.score || a.destinationTime - b.destinationTime);
+}
+
+function scoreCandidate(
+  priority: Priority,
+  destinationTime: number,
+  waitingTotal: number,
+  spread: number,
+  gatherTime: number
+) {
+  if (priority === "fast") return destinationTime + waitingTotal * 0.15;
+  if (priority === "fair") return spread * 4 + waitingTotal * 1.8 + destinationTime * 0.2;
+  return gatherTime + destinationTime * 0.45 + waitingTotal * 0.75 + spread * 1.5;
+}
+
+function dijkstra(start: string): DijkstraResult {
+  const distances = new Map<string, number>();
+  const previous = new Map<string, string>();
+  const unvisited = new Set(graph.keys());
+
+  for (const station of graph.keys()) {
+    distances.set(station, station === start ? 0 : Number.POSITIVE_INFINITY);
+  }
+
+  while (unvisited.size > 0) {
+    let current = "";
+    let currentDistance = Number.POSITIVE_INFINITY;
+
+    for (const station of unvisited) {
+      const distance = distances.get(station) ?? Number.POSITIVE_INFINITY;
+      if (distance < currentDistance) {
+        current = station;
+        currentDistance = distance;
+      }
+    }
+
+    if (!current || currentDistance === Number.POSITIVE_INFINITY) break;
+    unvisited.delete(current);
+
+    for (const edge of graph.get(current) ?? []) {
+      if (!unvisited.has(edge.station)) continue;
+      const nextDistance = currentDistance + edge.minutes;
+      if (nextDistance < (distances.get(edge.station) ?? Number.POSITIVE_INFINITY)) {
+        distances.set(edge.station, nextDistance);
+        previous.set(edge.station, current);
+      }
+    }
+  }
+
+  for (const [station, distance] of distances) {
+    if (distance === Number.POSITIVE_INFINITY) distances.delete(station);
+  }
+
+  return { distances, previous };
+}
+
+function reconstructPath(previous: Map<string, string>, from: string, to: string) {
+  if (from === to) return [from];
+
+  const path = [to];
+  let cursor = to;
+
+  while (cursor !== from) {
+    const next = previous.get(cursor);
+    if (!next) return [from, to];
+    path.push(next);
+    cursor = next;
+  }
+
+  return path.reverse();
+}
+
+function formatShareText(candidate: Candidate, state: AppState) {
+  const lines = [
+    `集合先：${candidate.station}`,
+    `行き先：${state.destination.trim()}`,
+    `集合目安：${formatClock(candidate.gatherTime)}ごろ`,
+    `目的地到着目安：${formatClock(candidate.destinationTime)}ごろ`,
+    "",
+    "各自の行き方"
+  ];
+
+  for (const route of candidate.routes) {
+    lines.push(
+      `・${route.person.name}：${route.person.origin} → ${candidate.station}`,
+      `  ${route.duration}分 / ${formatClock(route.arrivalTime)}着`,
+      `  ${route.path.join(" → ")}`,
+      ""
+    );
+  }
+
+  lines.push(
+    `合流後：${candidate.station} → ${state.destination.trim()}`,
+    `約${candidate.onwardDuration}分`
+  );
+
+  return lines.join("\n");
+}
+
+function parseClock(value: string) {
+  const [hours, minutes] = value.split(":").map((part) => Number.parseInt(part, 10));
+  return hours * 60 + minutes;
+}
+
+function formatClock(totalMinutes: number) {
+  const normalized = ((totalMinutes % 1440) + 1440) % 1440;
+  const hours = Math.floor(normalized / 60)
+    .toString()
+    .padStart(2, "0");
+  const minutes = (normalized % 60).toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function buildShareableUrl(state: AppState) {
+  if (typeof window === "undefined") return "";
+  const params = stateToParams(state);
+  return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+}
+
+function replaceUrlState(state: AppState) {
+  if (typeof window === "undefined") return;
+  window.history.replaceState(null, "", buildShareableUrl(state));
+}
+
+function stateToParams(state: AppState) {
+  const params = new URLSearchParams();
+  params.set("destination", state.destination.trim());
+  params.set("departureTime", state.departureTime);
+  params.set("priority", state.priority);
+  params.set(
+    "people",
+    JSON.stringify(
+      state.people.map((person) => ({
+        name: person.name.trim(),
+        origin: person.origin.trim()
+      }))
+    )
+  );
+  return params;
+}
+
+function restoreStateFromUrl(): AppState | null {
+  if (typeof window === "undefined") return null;
+
+  const search = window.location.search || window.location.hash.replace(/^#/, "?");
+  const params = new URLSearchParams(search);
+  const destination = params.get("destination");
+  const departureTime = params.get("departureTime");
+  const priority = params.get("priority") as Priority | null;
+  const peopleParam = params.get("people");
+
+  if (!destination || !departureTime || !priority || !peopleParam) return null;
+  if (!["balanced", "fast", "fair"].includes(priority)) return null;
+
+  try {
+    const parsedPeople = JSON.parse(peopleParam) as Array<{ name?: string; origin?: string }>;
+    const people = parsedPeople
+      .filter((person) => person.name && person.origin)
+      .map((person, index) => ({
+        id: `url-${index}`,
+        name: person.name ?? "",
+        origin: person.origin ?? ""
+      }));
+
+    if (people.length === 0) return null;
+    return {
+      destination,
+      departureTime,
+      priority,
+      people
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function copyToClipboard(text: string) {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Some in-app browsers expose Clipboard API but deny write permission.
+    }
+  }
+
+  if (typeof document === "undefined") return;
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+}
