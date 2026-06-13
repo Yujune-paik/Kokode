@@ -248,7 +248,7 @@ const LINE_NETWORKS: Array<{ line: LineMeta; stations: string[]; minutes: number
   {
     line: lineMeta("JR", "埼京線", "JA", "#00A040"),
     minutes: 4,
-    stations: ["新宿", "池袋", "赤羽", "武蔵浦和", "大宮", "川越"]
+    stations: ["大崎", "恵比寿", "渋谷", "新宿", "池袋", "赤羽", "武蔵浦和", "大宮", "川越"]
   },
   {
     line: lineMeta("JR", "京浜東北線", "JK", "#00B2E5"),
@@ -304,13 +304,18 @@ const LINE_NETWORKS: Array<{ line: LineMeta; stations: string[]; minutes: number
   },
   {
     line: lineMeta("小田急", "小田原線", "OH", "#0085CE"),
-    minutes: 3,
+    minutes: 7,
     stations: ["新宿", "下北沢", "登戸", "新百合ヶ丘", "町田", "相模大野", "海老名"]
   },
   {
+    line: lineMeta("京王", "井の頭線", "IN", "#004EA2"),
+    minutes: 6,
+    stations: ["渋谷", "下北沢", "明大前", "吉祥寺"]
+  },
+  {
     line: lineMeta("京王", "京王線", "KO", "#DD0077"),
-    minutes: 3,
-    stations: ["渋谷", "下北沢", "明大前", "調布", "府中", "分倍河原", "橋本"]
+    minutes: 5,
+    stations: ["新宿", "明大前", "調布", "府中", "分倍河原", "橋本"]
   },
   {
     line: lineMeta("東京メトロ", "丸ノ内線", "M", "#F62E36"),
@@ -1126,6 +1131,13 @@ function StationInput({
         id={id}
         className="input"
         aria-label={label}
+        autoCapitalize="none"
+        autoComplete="new-password"
+        autoCorrect="off"
+        enterKeyHint="search"
+        inputMode="search"
+        name={`kokode-${id}-station`}
+        spellCheck={false}
         value={value}
         onBlur={() => window.setTimeout(() => setFocused(false), 120)}
         onChange={(event) => {
@@ -1198,9 +1210,11 @@ function RouteSteps({
     );
   }
 
+  const displayLegs = mergeConsecutiveLegs(legs);
+
   return (
     <div className="route-steps">
-      {legs.map((leg, index) => (
+      {displayLegs.map((leg, index) => (
         <div className="route-step" key={`${leg.from}-${leg.to}-${index}`}>
           {index > 0 ? <div className="transfer-note">{leg.from}で乗り換え</div> : null}
           <div className="leg-stations">
@@ -1224,6 +1238,31 @@ function RouteSteps({
       ))}
     </div>
   );
+}
+
+function mergeConsecutiveLegs(legs: RouteLeg[]) {
+  const merged: RouteLeg[] = [];
+
+  for (const leg of legs) {
+    const previous = merged.at(-1);
+    const sameLine =
+      previous &&
+      previous.to === leg.from &&
+      previous.lineName === leg.lineName &&
+      previous.lineSymbol === leg.lineSymbol &&
+      previous.isWalk === leg.isWalk;
+
+    if (sameLine) {
+      previous.to = leg.to;
+      previous.duration += leg.duration;
+      previous.arrivalTime = leg.arrivalTime ?? previous.arrivalTime;
+      continue;
+    }
+
+    merged.push({ ...leg });
+  }
+
+  return merged;
 }
 
 function findStationSuggestions(value: string) {
@@ -2011,14 +2050,14 @@ function buildShareFlexMessage(candidate: Candidate, state: AppState): LineFlexM
 
 function formatLegsCompact(legs: RouteLeg[], fallbackPath: string[]) {
   if (legs.length === 0) return fallbackPath.join(" → ");
-  return legs
+  return mergeConsecutiveLegs(legs)
     .map((leg) => `${leg.from} → ${leg.to}（${leg.lineName}${leg.duration ? ` ${leg.duration}分` : ""}）`)
     .join(" / ");
 }
 
 function formatLegsForText(legs: RouteLeg[], fallbackPath: string[]) {
   if (legs.length === 0) return [fallbackPath.join(" → ")];
-  return legs.flatMap((leg, index) => [
+  return mergeConsecutiveLegs(legs).flatMap((leg, index) => [
     ...(index > 0 ? [`${leg.from}で乗り換え`] : []),
     `${leg.from} → ${leg.to}`,
     `${leg.lineName}${leg.duration ? ` / ${leg.duration}分` : ""}`
