@@ -69,7 +69,6 @@ type LiffLike = {
   isInClient: () => boolean;
   isLoggedIn: () => boolean;
   login: (options?: { redirectUri?: string }) => void;
-  getProfile: () => Promise<{ displayName: string }>;
   isApiAvailable: (apiName: string) => boolean;
   shareTargetPicker: (
     messages: LineMessage[],
@@ -88,8 +87,8 @@ const DEFAULT_STATE: AppState = {
   departureTime: "18:00",
   priority: "balanced",
   people: [
-    { id: "p1", name: "自分", origin: "ひばりヶ丘" },
-    { id: "p2", name: "相手", origin: "横浜" }
+    { id: "p1", name: "あなた", origin: "ひばりヶ丘" },
+    { id: "p2", name: "お相手", origin: "横浜" }
   ]
 };
 
@@ -366,18 +365,6 @@ export function MeetupPlanner() {
           setLiffClient(liff);
           setLiffStatus(liff.isInClient() ? "LIFFで起動中" : "Webで起動中");
         }
-        if (!cancelled && liff.isLoggedIn()) {
-          try {
-            const profile = await liff.getProfile();
-            setPeople((current) =>
-              current.map((person, index) =>
-                index === 0 ? { ...person, name: profile.displayName } : person
-              )
-            );
-          } catch {
-            // Keep the default "自分" label if profile scope isn't available.
-          }
-        }
       } catch {
         if (!cancelled) {
           setLiffStatus("LIFF初期化失敗");
@@ -407,7 +394,7 @@ export function MeetupPlanner() {
   function addPerson() {
     setPeople((current) => [
       ...current,
-      { id: `p${Date.now()}`, name: `参加者${current.length + 1}`, origin: "" }
+      { id: `p${Date.now()}`, name: `一緒に行く人${current.length + 1}`, origin: "" }
     ]);
   }
 
