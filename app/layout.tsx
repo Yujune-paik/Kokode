@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "集合先ナビ",
-  description: "複数人の現在地から集合しやすい駅と行き方を探します。"
+  title: "KOKODE",
+  description: "大切な人との集合先と行き方を探します。"
 };
 
 export const viewport: Viewport = {
