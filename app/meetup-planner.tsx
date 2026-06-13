@@ -40,6 +40,8 @@ type RouteResult = {
   arrivalTime: number;
   path: string[];
   lines: LineMeta[];
+  legs: RouteLeg[];
+  transferCount: number;
 };
 
 type Candidate = {
@@ -50,7 +52,9 @@ type Candidate = {
   onwardDuration: number;
   onwardPath: string[];
   onwardLines: LineMeta[];
+  onwardLegs: RouteLeg[];
   waitingTotal: number;
+  transferTotal: number;
   score: number;
   routes: RouteResult[];
 };
@@ -62,9 +66,23 @@ type LineMeta = {
   color: string;
 };
 
+type RouteLeg = {
+  from: string;
+  to: string;
+  lineName: string;
+  lineSymbol: string;
+  lineColor: string;
+  duration: number;
+  departureTime?: string;
+  arrivalTime?: string;
+  isWalk?: boolean;
+};
+
 type EkispertRoute = {
   duration: number;
   path: string[];
+  transferCount: number;
+  legs: RouteLeg[];
   lines: Array<{
     name: string;
     symbol: string;
@@ -111,20 +129,22 @@ type LiffLike = {
 };
 
 const PRIORITY_LABELS: Record<Priority, string> = {
-  balanced: "移動時間バランス",
+  balanced: "乗換少なめ",
   fast: "目的地に早く着く",
   fair: "待ち時間少なめ"
 };
 
 const DEFAULT_STATE: AppState = {
-  destination: "渋谷",
+  destination: "",
   departureTime: "",
   priority: "balanced",
   people: [
-    { id: "p1", name: "あなた", origin: "ひばりヶ丘" },
-    { id: "p2", name: "お相手", origin: "横浜" }
+    { id: "p1", name: "あなた", origin: "" },
+    { id: "p2", name: "お相手", origin: "" }
   ]
 };
+
+const EKISPERT_MEETUP_CANDIDATE_LIMIT = 5;
 
 const TRANSFER_LINE: LineMeta = {
   operator: "徒歩/連絡",
@@ -619,6 +639,23 @@ const EDGES: EdgeTuple[] = [
 ];
 const graph = buildGraph(EDGES);
 const stationNames = Array.from(graph.keys()).sort((a, b) => a.localeCompare(b, "ja"));
+const majorHubStations = [
+  "東京",
+  "新宿",
+  "渋谷",
+  "池袋",
+  "上野",
+  "品川",
+  "大手町",
+  "銀座",
+  "表参道",
+  "六本木",
+  "飯田橋",
+  "秋葉原",
+  "横浜",
+  "大宮",
+  "北千住"
+];
 
 export function MeetupPlanner() {
   const [destination, setDestination] = useState(DEFAULT_STATE.destination);
@@ -714,8 +751,9 @@ export function MeetupPlanner() {
       setIsRefiningRoutes(true);
 
       try {
+        const candidateSeeds = await expandCandidatesWithEkispertRoutes(baseCandidates, appState);
         const refined = await Promise.all(
-          baseCandidates.map((candidate) => refineCandidateWithEkispert(candidate, appState))
+          candidateSeeds.map((candidate) => refineCandidateWithEkispert(candidate, appState))
         );
         if (!cancelled) {
           const nextCandidates = refined
@@ -835,7 +873,7 @@ export function MeetupPlanner() {
               label="行き先"
               value={destination}
               onChange={setDestination}
-              placeholder="例：渋谷"
+              placeholder="行き先の駅名"
             />
 
             <div className="field">
@@ -884,7 +922,7 @@ export function MeetupPlanner() {
                     label={`${person.name || index + 1 + "人目"}の現在地`}
                     value={person.origin}
                     onChange={(value) => updatePerson(person.id, { origin: value })}
-                    placeholder="例：横浜"
+                    placeholder={index === 0 ? "あなたの現在地" : "お相手の現在地"}
                     compact
                   />
                   <button
@@ -914,12 +952,6 @@ export function MeetupPlanner() {
           </div>
 
           {hasSearched && validationMessage ? <div className="error">{validationMessage}</div> : null}
-
-          <datalist id="station-list">
-            {stationNames.map((station) => (
-              <option key={station} value={station} />
-            ))}
-          </datalist>
         </section>
 
         {hasSearched ? (
@@ -980,11 +1012,10 @@ export function MeetupPlanner() {
                           <div className="route-title">
                             <strong>{route.person.name || "参加者"}</strong>
                             <span>
-                              {route.duration}分 / {formatClock(route.arrivalTime)}着
+                              {route.duration}分 / 乗換{route.transferCount}回 / {formatClock(route.arrivalTime)}着
                             </span>
                           </div>
-                          <LineBadges lines={route.lines} />
-                          <p className="route-path">{route.path.join(" → ")}</p>
+                          <RouteSteps legs={route.legs} fallbackPath={route.path} fallbackLines={route.lines} />
                         </div>
                       ))}
                       {!candidate.isDirectDestination ? (
@@ -993,8 +1024,11 @@ export function MeetupPlanner() {
                             <strong>合流後</strong>
                             <span>約{candidate.onwardDuration}分</span>
                           </div>
-                          <LineBadges lines={candidate.onwardLines} />
-                          <p className="route-path">{candidate.onwardPath.join(" → ")}</p>
+                          <RouteSteps
+                            legs={candidate.onwardLegs}
+                            fallbackPath={candidate.onwardPath}
+                            fallbackLines={candidate.onwardLines}
+                          />
                         </div>
                       ) : null}
                     </div>
@@ -1005,19 +1039,7 @@ export function MeetupPlanner() {
               <div className="error">条件に合う集合先が見つかりませんでした。</div>
             )}
           </section>
-        ) : (
-          <aside className="empty-state">
-            <h2>駅名候補</h2>
-            <div className="station-chips">
-              {stationNames.slice(0, 20).map((station) => (
-                <span className="chip" key={station}>
-                  <MapPin size={12} />
-                  {station}
-                </span>
-              ))}
-            </div>
-          </aside>
-        )}
+        ) : null}
       </div>
     </main>
   );
@@ -1040,12 +1062,26 @@ function StationInput({
 }) {
   const [focused, setFocused] = useState(false);
   const [remoteSuggestions, setRemoteSuggestions] = useState<StationSuggestion[]>([]);
+  const [selectedStationName, setSelectedStationName] = useState("");
   const localSuggestions = useMemo(() => findStationSuggestions(value), [value]);
   const suggestions = useMemo(
     () => mergeStationSuggestions(localSuggestions, remoteSuggestions),
     [localSuggestions, remoteSuggestions]
   );
+  const isResolved =
+    Boolean(value.trim()) &&
+    Boolean(
+      resolveStationName(value) ||
+        normalizeStation(selectedStationName) === normalizeStation(value) ||
+        remoteSuggestions.some((station) => normalizeStation(station.name) === normalizeStation(value))
+    );
   const showSuggestions = focused && suggestions.length > 0;
+
+  useEffect(() => {
+    if (selectedStationName && normalizeStation(selectedStationName) !== normalizeStation(value)) {
+      setSelectedStationName("");
+    }
+  }, [selectedStationName, value]);
 
   useEffect(() => {
     const query = value.trim();
@@ -1089,14 +1125,17 @@ function StationInput({
       <input
         id={id}
         className="input"
-        list="station-list"
         aria-label={label}
         value={value}
         onBlur={() => window.setTimeout(() => setFocused(false), 120)}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) => {
+          setSelectedStationName("");
+          onChange(event.target.value);
+        }}
         onFocus={() => setFocused(true)}
         placeholder={placeholder}
       />
+      {isResolved ? <span className="resolved-station">選択済み</span> : null}
       {showSuggestions ? (
         <div className="suggestion-list">
           {suggestions.map((station) => (
@@ -1106,8 +1145,10 @@ function StationInput({
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
+                setSelectedStationName(station.name);
                 onChange(station.name);
                 setFocused(false);
+                setRemoteSuggestions([]);
               }}
             >
               <MapPin size={14} />
@@ -1139,10 +1180,56 @@ function LineBadges({ lines }: { lines: LineMeta[] }) {
   );
 }
 
+function RouteSteps({
+  legs,
+  fallbackPath,
+  fallbackLines
+}: {
+  legs: RouteLeg[];
+  fallbackPath: string[];
+  fallbackLines: LineMeta[];
+}) {
+  if (legs.length === 0) {
+    return (
+      <>
+        <LineBadges lines={fallbackLines} />
+        <p className="route-path">{fallbackPath.join(" → ")}</p>
+      </>
+    );
+  }
+
+  return (
+    <div className="route-steps">
+      {legs.map((leg, index) => (
+        <div className="route-step" key={`${leg.from}-${leg.to}-${index}`}>
+          {index > 0 ? <div className="transfer-note">{leg.from}で乗り換え</div> : null}
+          <div className="leg-stations">
+            <span>{leg.from}</span>
+            <span aria-hidden="true">→</span>
+            <span>{leg.to}</span>
+          </div>
+          <div className="leg-line">
+            <span className="line-symbol" style={{ backgroundColor: leg.lineColor }}>
+              {leg.lineSymbol || (leg.isWalk ? "歩" : "路")}
+            </span>
+            <span>{leg.lineName}</span>
+            <span>{leg.duration > 0 ? `${leg.duration}分` : "所要時間確認中"}</span>
+            {leg.departureTime && leg.arrivalTime ? (
+              <span>
+                {leg.departureTime}→{leg.arrivalTime}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function findStationSuggestions(value: string) {
   const query = normalizeStation(value);
   if (!query) {
-    return stationNames.slice(0, 8).map((name) => ({ name, source: "local" as const }));
+    return [];
   }
 
   return stationNames
@@ -1196,15 +1283,11 @@ function buildGraph(edges: EdgeTuple[]) {
 
 function validateState(state: AppState) {
   if (!state.destination.trim()) return "行き先を入力してください。";
-  if (!resolveStationName(state.destination)) return `行き先「${state.destination}」は現在の駅ネットワークにありません。`;
   if (!state.departureTime) return "出発時刻を入力してください。";
   if (state.people.length === 0) return "参加者を1人以上入力してください。";
 
   const emptyPerson = state.people.find((person) => !person.name.trim() || !person.origin.trim());
   if (emptyPerson) return "参加者の名前と現在地を入力してください。";
-
-  const unknownOrigin = state.people.find((person) => !resolveStationName(person.origin));
-  if (unknownOrigin) return `現在地「${unknownOrigin.origin}」は現在の駅ネットワークにありません。`;
 
   return "";
 }
@@ -1217,6 +1300,13 @@ function calculateCandidates(state: AppState) {
     name: person.name.trim(),
     origin: resolveStationName(person.origin) ?? person.origin.trim()
   }));
+  const canUseLocalGraph =
+    graph.has(destination) && cleanPeople.every((person) => graph.has(person.origin));
+
+  if (!canUseLocalGraph) {
+    return [buildDirectDestinationCandidate(destination, cleanPeople, departureMinutes, state.priority)];
+  }
+
   const routeMaps = cleanPeople.map((person) => dijkstra(person.origin));
   const destinationRoutes = dijkstra(destination);
   const candidates: Candidate[] = [];
@@ -1243,7 +1333,9 @@ function calculateCandidates(state: AppState) {
         duration,
         arrivalTime: departureMinutes + duration,
         path,
-        lines: linesForPath(path)
+        lines: linesForPath(path),
+        legs: fallbackLegsForPath(path),
+        transferCount: Math.max(0, linesForPath(path).length - 1)
       });
     }
 
@@ -1260,13 +1352,15 @@ function calculateCandidates(state: AppState) {
     const waitingTotal = routes.reduce((sum, route) => sum + (gatherTime - route.arrivalTime), 0);
     const durations = routes.map((route) => route.duration);
     const spread = Math.max(...durations) - Math.min(...durations);
+    const transferTotal = routes.reduce((sum, route) => sum + route.transferCount, 0);
     const score = scoreCandidate(
       state.priority,
       destinationTime,
       waitingTotal,
       spread,
       gatherTime,
-      isDirectDestination
+      isDirectDestination,
+      transferTotal
     );
 
     candidates.push({
@@ -1277,13 +1371,230 @@ function calculateCandidates(state: AppState) {
       onwardDuration,
       onwardPath: reconstructPath(destinationRoutes.previous, destination, station).reverse(),
       onwardLines: linesForPath(reconstructPath(destinationRoutes.previous, destination, station).reverse()),
+      onwardLegs: fallbackLegsForPath(reconstructPath(destinationRoutes.previous, destination, station).reverse()),
       waitingTotal,
+      transferTotal,
       score,
       routes
     });
   }
 
   return candidates.sort((a, b) => a.score - b.score || a.destinationTime - b.destinationTime);
+}
+
+function buildDirectDestinationCandidate(
+  destination: string,
+  people: Person[],
+  departureMinutes: number,
+  priority: Priority
+): Candidate {
+  const routes = people.map((person) => ({
+    person,
+    duration: 0,
+    arrivalTime: departureMinutes,
+    path: [person.origin, destination],
+    lines: [],
+    legs: [
+      {
+        from: person.origin,
+        to: destination,
+        lineName: "経路確認中",
+        lineSymbol: "…",
+        lineColor: "#66726D",
+        duration: 0
+      }
+    ],
+    transferCount: 0
+  }));
+
+  return {
+    station: destination,
+    isDirectDestination: true,
+    gatherTime: departureMinutes,
+    destinationTime: departureMinutes,
+    onwardDuration: 0,
+    onwardPath: [destination],
+    onwardLines: [],
+    onwardLegs: [],
+    waitingTotal: 0,
+    transferTotal: 0,
+    score: scoreCandidate(priority, departureMinutes, 0, 0, departureMinutes, true, 0),
+    routes
+  };
+}
+
+async function expandCandidatesWithEkispertRoutes(baseCandidates: Candidate[], state: AppState) {
+  const shouldExpand =
+    baseCandidates.length === 1 &&
+    baseCandidates[0].isDirectDestination &&
+    baseCandidates[0].routes.every((route) =>
+      route.legs.some((leg) => leg.lineName === "経路確認中")
+    );
+
+  if (!shouldExpand) return baseCandidates;
+
+  const departureMinutes = parseClock(state.departureTime);
+  const destination = resolveStationName(state.destination) ?? state.destination.trim();
+  const cleanPeople = state.people.map((person) => ({
+    ...person,
+    name: person.name.trim(),
+    origin: resolveStationName(person.origin) ?? person.origin.trim()
+  }));
+
+  const directRoutes = await Promise.all(
+    cleanPeople.map((person) =>
+      fetchEkispertRoute(person.origin, destination, state.departureTime, state.priority)
+    )
+  );
+
+  if (directRoutes.some((route) => !route)) return baseCandidates;
+
+  const availableDirectRoutes = directRoutes as EkispertRoute[];
+  const directCandidate = buildCandidateFromKnownRoutes({
+    station: destination,
+    people: cleanPeople,
+    routes: availableDirectRoutes,
+    departureMinutes,
+    priority: state.priority,
+    isDirectDestination: true
+  });
+  const meetupStations = pickEkispertMeetupStations(availableDirectRoutes, destination, cleanPeople);
+  const meetupCandidates = meetupStations.map((station) =>
+    buildPendingCandidate(station, destination, cleanPeople, departureMinutes, state.priority)
+  );
+
+  return [directCandidate, ...meetupCandidates].slice(0, EKISPERT_MEETUP_CANDIDATE_LIMIT);
+}
+
+function buildCandidateFromKnownRoutes({
+  station,
+  people,
+  routes,
+  departureMinutes,
+  priority,
+  isDirectDestination
+}: {
+  station: string;
+  people: Person[];
+  routes: EkispertRoute[];
+  departureMinutes: number;
+  priority: Priority;
+  isDirectDestination: boolean;
+}): Candidate {
+  const routeResults = routes.map((route, index) => ({
+    person: people[index],
+    duration: route.duration,
+    arrivalTime: departureMinutes + route.duration,
+    path: route.path.length > 0 ? route.path : [people[index].origin, station],
+    lines: route.lines.map(toLineMetaFromEkispert),
+    legs: route.legs.length > 0 ? route.legs : fallbackLegsForPath(route.path),
+    transferCount: route.transferCount
+  }));
+  const gatherTime = Math.max(...routeResults.map((route) => route.arrivalTime));
+  const waitingTotal = routeResults.reduce((sum, route) => sum + (gatherTime - route.arrivalTime), 0);
+  const durations = routeResults.map((route) => route.duration);
+  const spread = Math.max(...durations) - Math.min(...durations);
+  const transferTotal = routeResults.reduce((sum, route) => sum + route.transferCount, 0);
+  const score = scoreCandidate(
+    priority,
+    gatherTime,
+    waitingTotal,
+    spread,
+    gatherTime,
+    isDirectDestination,
+    transferTotal
+  );
+
+  return {
+    station,
+    isDirectDestination,
+    gatherTime,
+    destinationTime: gatherTime,
+    onwardDuration: 0,
+    onwardPath: [station],
+    onwardLines: [],
+    onwardLegs: [],
+    waitingTotal,
+    transferTotal,
+    score,
+    routes: routeResults
+  };
+}
+
+function buildPendingCandidate(
+  station: string,
+  destination: string,
+  people: Person[],
+  departureMinutes: number,
+  priority: Priority
+): Candidate {
+  const routes = people.map((person) => ({
+    person,
+    duration: 0,
+    arrivalTime: departureMinutes,
+    path: [person.origin, station],
+    lines: [],
+    legs: [
+      {
+        from: person.origin,
+        to: station,
+        lineName: "経路確認中",
+        lineSymbol: "…",
+        lineColor: "#66726D",
+        duration: 0
+      }
+    ],
+    transferCount: 0
+  }));
+
+  return {
+    station,
+    isDirectDestination: false,
+    gatherTime: departureMinutes,
+    destinationTime: departureMinutes,
+    onwardDuration: 0,
+    onwardPath: [station, destination],
+    onwardLines: [],
+    onwardLegs: [
+      {
+        from: station,
+        to: destination,
+        lineName: "経路確認中",
+        lineSymbol: "…",
+        lineColor: "#66726D",
+        duration: 0
+      }
+    ],
+    waitingTotal: 0,
+    transferTotal: 0,
+    score: scoreCandidate(priority, departureMinutes, 0, 0, departureMinutes, false, 0),
+    routes
+  };
+}
+
+function pickEkispertMeetupStations(routes: EkispertRoute[], destination: string, people: Person[]) {
+  const origins = new Set(people.map((person) => normalizeStation(person.origin)));
+  const destinationKey = normalizeStation(destination);
+  const scoredStations = new Map<string, number>();
+
+  for (const route of routes) {
+    const path = route.path.filter(Boolean);
+    const denominator = Math.max(1, path.length - 1);
+
+    path.forEach((station, index) => {
+      const normalized = normalizeStation(station);
+      if (!normalized || normalized === destinationKey || origins.has(normalized)) return;
+      const midpointScore = 1 - Math.abs(index / denominator - 0.6);
+      const hubScore = majorHubStations.some((hub) => normalizeStation(hub) === normalized) ? 4 : 0;
+      const current = scoredStations.get(station) ?? 0;
+      scoredStations.set(station, current + 1 + midpointScore + hubScore);
+    });
+  }
+
+  return Array.from(scoredStations.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([station]) => station)
+    .slice(0, EKISPERT_MEETUP_CANDIDATE_LIMIT - 1);
 }
 
 async function refineCandidateWithEkispert(candidate: Candidate, state: AppState) {
@@ -1296,7 +1607,8 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
     const ekispertRoute = await fetchEkispertRoute(
       route.person.origin,
       candidate.station,
-      state.departureTime
+      state.departureTime,
+      state.priority
     );
 
     if (ekispertRoute) {
@@ -1314,7 +1626,9 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
         duration: ekispertRoute.duration,
         arrivalTime: departureMinutes + ekispertRoute.duration,
         path,
-        lines: ekispertRoute.lines.map(toLineMetaFromEkispert)
+        lines: ekispertRoute.lines.map(toLineMetaFromEkispert),
+        legs: ekispertRoute.legs.length > 0 ? ekispertRoute.legs : fallbackLegsForPath(path),
+        transferCount: ekispertRoute.transferCount
       });
     } else {
       refinedRoutes.push(route);
@@ -1323,7 +1637,7 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
 
   const onwardEkispertRoute = candidate.isDirectDestination
     ? null
-    : await fetchEkispertRoute(candidate.station, destination, state.departureTime);
+    : await fetchEkispertRoute(candidate.station, destination, state.departureTime, state.priority);
 
   const gatherTime = Math.max(...refinedRoutes.map((route) => route.arrivalTime));
   const onwardDuration = onwardEkispertRoute?.duration ?? candidate.onwardDuration;
@@ -1331,17 +1645,24 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
   const onwardLines = onwardEkispertRoute
     ? onwardEkispertRoute.lines.map(toLineMetaFromEkispert)
     : candidate.onwardLines;
+  const onwardLegs = onwardEkispertRoute
+    ? onwardEkispertRoute.legs
+    : candidate.onwardLegs;
   const destinationTime = gatherTime + onwardDuration;
   const waitingTotal = refinedRoutes.reduce((sum, route) => sum + (gatherTime - route.arrivalTime), 0);
   const durations = refinedRoutes.map((route) => route.duration);
   const spread = Math.max(...durations) - Math.min(...durations);
+  const transferTotal =
+    refinedRoutes.reduce((sum, route) => sum + route.transferCount, 0) +
+    (onwardEkispertRoute?.transferCount ?? 0);
   const score = scoreCandidate(
     state.priority,
     destinationTime,
     waitingTotal,
     spread,
     gatherTime,
-    candidate.isDirectDestination
+    candidate.isDirectDestination,
+    transferTotal
   );
 
   return {
@@ -1351,18 +1672,21 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
     onwardDuration,
     onwardPath,
     onwardLines,
+    onwardLegs,
     waitingTotal,
+    transferTotal,
     score: usedEkispert || onwardEkispertRoute ? score - 2 : score,
     routes: refinedRoutes
   };
 }
 
-async function fetchEkispertRoute(from: string, to: string, departureTime: string) {
+async function fetchEkispertRoute(from: string, to: string, departureTime: string, priority: Priority) {
   try {
     const params = new URLSearchParams({
       from,
       to,
-      time: departureTime
+      time: departureTime,
+      sort: priority === "fast" ? "time" : "transfer"
     });
     const response = await fetch(`/api/routes?${params.toString()}`);
     if (!response.ok) return null;
@@ -1389,12 +1713,13 @@ function scoreCandidate(
   waitingTotal: number,
   spread: number,
   gatherTime: number,
-  isDirectDestination: boolean
+  isDirectDestination: boolean,
+  transferTotal: number
 ) {
   const directBonus = isDirectDestination ? -8 : 0;
-  if (priority === "fast") return destinationTime + waitingTotal * 0.1 + directBonus;
-  if (priority === "fair") return destinationTime * 0.8 + spread * 3 + waitingTotal * 1.5 + directBonus;
-  return destinationTime * 1.4 + gatherTime * 0.15 + waitingTotal * 0.6 + spread * 1.2 + directBonus;
+  if (priority === "fast") return destinationTime + transferTotal * 8 + waitingTotal * 0.1 + directBonus;
+  if (priority === "fair") return transferTotal * 22 + destinationTime * 0.75 + spread * 3 + waitingTotal * 1.5 + directBonus;
+  return transferTotal * 32 + destinationTime * 0.9 + gatherTime * 0.1 + waitingTotal * 0.45 + spread + directBonus;
 }
 
 function routePassesDestinationBeforeMeetup(path: string[], destination: string) {
@@ -1413,6 +1738,28 @@ function linesForPath(path: string[]) {
   }
 
   return uniqueLines(lines);
+}
+
+function fallbackLegsForPath(path: string[]): RouteLeg[] {
+  const legs: RouteLeg[] = [];
+
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const from = path[index];
+    const to = path[index + 1];
+    const edge = graph.get(from)?.find((candidate) => candidate.station === to);
+    const line = edge?.line ?? TRANSFER_LINE;
+    legs.push({
+      from,
+      to,
+      lineName: line.name,
+      lineSymbol: line.symbol,
+      lineColor: line.color,
+      duration: edge?.minutes ?? 0,
+      isWalk: line.name.includes("連絡")
+    });
+  }
+
+  return legs;
 }
 
 function uniqueLines(lines: LineMeta[]) {
@@ -1519,7 +1866,7 @@ function buildShareFlexMessage(candidate: Candidate, state: AppState): LineFlexM
         },
         {
           type: "text",
-          text: route.path.join(" → "),
+          text: formatLegsCompact(route.legs, route.path),
           size: "xs",
           color: "#485650",
           wrap: true
@@ -1641,7 +1988,7 @@ function buildShareFlexMessage(candidate: Candidate, state: AppState): LineFlexM
                   },
                   {
                     type: "text",
-                    text: `${candidate.onwardPath.join(" → ")} / 約${candidate.onwardDuration}分`,
+                    text: `${formatLegsCompact(candidate.onwardLegs, candidate.onwardPath)} / 約${candidate.onwardDuration}分`,
                     size: "xs",
                     color: "#485650",
                     wrap: true
@@ -1662,6 +2009,22 @@ function buildShareFlexMessage(candidate: Candidate, state: AppState): LineFlexM
   };
 }
 
+function formatLegsCompact(legs: RouteLeg[], fallbackPath: string[]) {
+  if (legs.length === 0) return fallbackPath.join(" → ");
+  return legs
+    .map((leg) => `${leg.from} → ${leg.to}（${leg.lineName}${leg.duration ? ` ${leg.duration}分` : ""}）`)
+    .join(" / ");
+}
+
+function formatLegsForText(legs: RouteLeg[], fallbackPath: string[]) {
+  if (legs.length === 0) return [fallbackPath.join(" → ")];
+  return legs.flatMap((leg, index) => [
+    ...(index > 0 ? [`${leg.from}で乗り換え`] : []),
+    `${leg.from} → ${leg.to}`,
+    `${leg.lineName}${leg.duration ? ` / ${leg.duration}分` : ""}`
+  ]);
+}
+
 function formatShareText(candidate: Candidate, state: AppState) {
   const lines = [
     candidate.isDirectDestination ? "現地集合でよさそう" : "ここで集合しない？",
@@ -1677,8 +2040,8 @@ function formatShareText(candidate: Candidate, state: AppState) {
   for (const route of candidate.routes) {
     lines.push(
       `・${route.person.name}：${route.person.origin} → ${candidate.station}`,
-      `  ${route.duration}分 / ${formatClock(route.arrivalTime)}着`,
-      `  ${route.path.join(" → ")}`,
+      `  ${route.duration}分 / 乗換${route.transferCount}回 / ${formatClock(route.arrivalTime)}着`,
+      ...formatLegsForText(route.legs, route.path).map((line) => `  ${line}`),
       ""
     );
   }
@@ -1686,7 +2049,8 @@ function formatShareText(candidate: Candidate, state: AppState) {
   if (!candidate.isDirectDestination) {
     lines.push(
       `合流後：${candidate.station} → ${state.destination.trim()}`,
-      `約${candidate.onwardDuration}分`
+      `約${candidate.onwardDuration}分`,
+      ...formatLegsForText(candidate.onwardLegs, candidate.onwardPath).map((line) => `  ${line}`)
     );
   }
 
