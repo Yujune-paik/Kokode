@@ -32,6 +32,7 @@ type RouteResult = {
   duration: number;
   arrivalTime: number;
   path: string[];
+  lines: LineMeta[];
 };
 
 type Candidate = {
@@ -41,9 +42,25 @@ type Candidate = {
   destinationTime: number;
   onwardDuration: number;
   onwardPath: string[];
+  onwardLines: LineMeta[];
   waitingTotal: number;
   score: number;
   routes: RouteResult[];
+};
+
+type LineMeta = {
+  operator: string;
+  name: string;
+  symbol: string;
+  color: string;
+};
+
+type EdgeTuple = [string, string, number, LineMeta];
+
+type GraphEdge = {
+  station: string;
+  minutes: number;
+  line: LineMeta;
 };
 
 type DijkstraResult = {
@@ -84,13 +101,27 @@ const PRIORITY_LABELS: Record<Priority, string> = {
 
 const DEFAULT_STATE: AppState = {
   destination: "渋谷",
-  departureTime: "18:00",
+  departureTime: "",
   priority: "balanced",
   people: [
     { id: "p1", name: "あなた", origin: "ひばりヶ丘" },
     { id: "p2", name: "お相手", origin: "横浜" }
   ]
 };
+
+const TRANSFER_LINE: LineMeta = {
+  operator: "徒歩/連絡",
+  name: "駅間連絡",
+  symbol: "↔",
+  color: "#66726D"
+};
+
+const lineMeta = (operator: string, name: string, symbol: string, color: string): LineMeta => ({
+  operator,
+  name,
+  symbol,
+  color
+});
 
 const DIRECT_EDGES: Array<[string, string, number]> = [
   ["ひばりヶ丘", "池袋", 18],
@@ -122,8 +153,9 @@ const DIRECT_EDGES: Array<[string, string, number]> = [
   ["吉祥寺", "渋谷", 18]
 ];
 
-const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
+const LINE_NETWORKS: Array<{ line: LineMeta; stations: string[]; minutes: number }> = [
   {
+    line: lineMeta("JR", "山手線", "JY", "#9ACD32"),
     minutes: 3,
     stations: [
       "東京",
@@ -160,6 +192,7 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
     ]
   },
   {
+    line: lineMeta("JR", "中央線", "JC", "#F15A24"),
     minutes: 4,
     stations: [
       "東京",
@@ -176,30 +209,37 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
     ]
   },
   {
+    line: lineMeta("JR", "埼京線", "JA", "#00A040"),
     minutes: 4,
     stations: ["新宿", "池袋", "赤羽", "武蔵浦和", "大宮", "川越"]
   },
   {
+    line: lineMeta("JR", "京浜東北線", "JK", "#00B2E5"),
     minutes: 4,
     stations: ["上野", "赤羽", "浦和", "さいたま新都心", "大宮"]
   },
   {
+    line: lineMeta("JR", "上野東京ライン", "JU", "#F68B1F"),
     minutes: 4,
     stations: ["大宮", "浦和", "赤羽", "上野", "東京", "新橋", "品川", "川崎", "横浜", "桜木町"]
   },
   {
+    line: lineMeta("JR", "東海道線", "JT", "#F68B1F"),
     minutes: 4,
     stations: ["東京", "新橋", "品川", "川崎", "横浜", "戸塚", "大船", "藤沢", "辻堂", "茅ケ崎"]
   },
   {
+    line: lineMeta("JR", "京葉線", "JE", "#C9242F"),
     minutes: 4,
     stations: ["東京", "八丁堀", "新木場", "舞浜", "新浦安", "海浜幕張", "蘇我"]
   },
   {
+    line: lineMeta("東急", "東横線", "TY", "#DA0442"),
     minutes: 4,
     stations: ["渋谷", "中目黒", "自由が丘", "武蔵小杉", "日吉", "菊名", "横浜"]
   },
   {
+    line: lineMeta("西武", "池袋線", "SI", "#F5A200"),
     minutes: 3,
     stations: [
       "池袋",
@@ -226,14 +266,17 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
     ]
   },
   {
+    line: lineMeta("小田急", "小田原線", "OH", "#0085CE"),
     minutes: 3,
     stations: ["新宿", "下北沢", "登戸", "新百合ヶ丘", "町田", "相模大野", "海老名"]
   },
   {
+    line: lineMeta("京王", "京王線", "KO", "#DD0077"),
     minutes: 3,
     stations: ["渋谷", "下北沢", "明大前", "調布", "府中", "分倍河原", "橋本"]
   },
   {
+    line: lineMeta("東京メトロ", "丸ノ内線", "M", "#F62E36"),
     minutes: 3,
     stations: [
       "池袋",
@@ -253,6 +296,7 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
     ]
   },
   {
+    line: lineMeta("東京メトロ", "銀座線", "G", "#FF9500"),
     minutes: 3,
     stations: [
       "浅草",
@@ -277,14 +321,17 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
     ]
   },
   {
+    line: lineMeta("東京メトロ", "日比谷線", "H", "#B5B5AC"),
     minutes: 3,
     stations: ["中目黒", "恵比寿", "六本木", "霞ケ関", "銀座", "秋葉原", "上野", "北千住"]
   },
   {
+    line: lineMeta("東京メトロ", "千代田線", "C", "#00BB85"),
     minutes: 3,
     stations: ["代々木上原", "表参道", "赤坂", "霞ケ関", "日比谷", "大手町", "西日暮里", "北千住"]
   },
   {
+    line: lineMeta("東京メトロ", "南北線", "N", "#00AC9B"),
     minutes: 3,
     stations: [
       "目黒",
@@ -307,22 +354,259 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
     ]
   },
   {
+    line: lineMeta("東京メトロ", "有楽町線", "Y", "#C1A470"),
     minutes: 3,
     stations: ["和光市", "小竹向原", "池袋", "飯田橋", "有楽町", "豊洲", "新木場"]
   },
   {
+    line: lineMeta("東京メトロ", "半蔵門線", "Z", "#8F76D6"),
     minutes: 3,
     stations: ["押上", "錦糸町", "住吉", "清澄白河", "大手町", "永田町", "青山一丁目", "渋谷"]
+  },
+  {
+    line: lineMeta("東京メトロ", "南北線", "N", "#00AC9B"),
+    minutes: 3,
+    stations: [
+      "目黒",
+      "白金台",
+      "白金高輪",
+      "麻布十番",
+      "六本木一丁目",
+      "溜池山王",
+      "永田町",
+      "四ツ谷",
+      "市ケ谷",
+      "飯田橋",
+      "後楽園",
+      "東大前",
+      "本駒込",
+      "駒込",
+      "西ケ原",
+      "王子",
+      "赤羽岩淵"
+    ]
+  },
+  {
+    line: lineMeta("東京メトロ", "東西線", "T", "#009BBF"),
+    minutes: 3,
+    stations: [
+      "中野",
+      "落合",
+      "高田馬場",
+      "早稲田",
+      "神楽坂",
+      "飯田橋",
+      "九段下",
+      "竹橋",
+      "大手町",
+      "日本橋",
+      "茅場町",
+      "門前仲町",
+      "木場",
+      "東陽町",
+      "南砂町",
+      "西葛西",
+      "葛西",
+      "浦安"
+    ]
+  },
+  {
+    line: lineMeta("東京メトロ", "副都心線", "F", "#9C5E31"),
+    minutes: 3,
+    stations: [
+      "和光市",
+      "地下鉄成増",
+      "地下鉄赤塚",
+      "平和台",
+      "氷川台",
+      "小竹向原",
+      "千川",
+      "要町",
+      "池袋",
+      "雑司が谷",
+      "西早稲田",
+      "東新宿",
+      "新宿三丁目",
+      "北参道",
+      "明治神宮前",
+      "渋谷"
+    ]
+  },
+  {
+    line: lineMeta("都営", "浅草線", "A", "#E85298"),
+    minutes: 3,
+    stations: [
+      "西馬込",
+      "馬込",
+      "中延",
+      "戸越",
+      "五反田",
+      "高輪台",
+      "泉岳寺",
+      "三田",
+      "大門",
+      "新橋",
+      "東銀座",
+      "宝町",
+      "日本橋",
+      "人形町",
+      "東日本橋",
+      "浅草橋",
+      "蔵前",
+      "浅草",
+      "本所吾妻橋",
+      "押上"
+    ]
+  },
+  {
+    line: lineMeta("都営", "三田線", "I", "#0079C2"),
+    minutes: 3,
+    stations: [
+      "目黒",
+      "白金台",
+      "白金高輪",
+      "三田",
+      "芝公園",
+      "御成門",
+      "内幸町",
+      "日比谷",
+      "大手町",
+      "神保町",
+      "水道橋",
+      "春日",
+      "白山",
+      "千石",
+      "巣鴨",
+      "西巣鴨",
+      "新板橋",
+      "板橋区役所前",
+      "板橋本町",
+      "本蓮沼",
+      "志村坂上",
+      "志村三丁目",
+      "蓮根",
+      "西台",
+      "高島平",
+      "西高島平"
+    ]
+  },
+  {
+    line: lineMeta("都営", "新宿線", "S", "#6CBB5A"),
+    minutes: 3,
+    stations: [
+      "新宿",
+      "新宿三丁目",
+      "曙橋",
+      "市ケ谷",
+      "九段下",
+      "神保町",
+      "小川町",
+      "岩本町",
+      "馬喰横山",
+      "浜町",
+      "森下",
+      "菊川",
+      "住吉",
+      "西大島",
+      "大島",
+      "東大島",
+      "船堀",
+      "一之江",
+      "瑞江",
+      "篠崎",
+      "本八幡"
+    ]
+  },
+  {
+    line: lineMeta("都営", "大江戸線", "E", "#B6007A"),
+    minutes: 3,
+    stations: [
+      "都庁前",
+      "新宿西口",
+      "東新宿",
+      "若松河田",
+      "牛込柳町",
+      "牛込神楽坂",
+      "飯田橋",
+      "春日",
+      "本郷三丁目",
+      "上野御徒町",
+      "新御徒町",
+      "蔵前",
+      "両国",
+      "森下",
+      "清澄白河",
+      "門前仲町",
+      "月島",
+      "勝どき",
+      "築地市場",
+      "汐留",
+      "大門",
+      "赤羽橋",
+      "麻布十番",
+      "六本木",
+      "青山一丁目",
+      "国立競技場",
+      "代々木",
+      "新宿",
+      "都庁前",
+      "西新宿五丁目",
+      "中野坂上",
+      "東中野",
+      "中井",
+      "落合南長崎",
+      "新江古田",
+      "練馬",
+      "豊島園",
+      "練馬春日町",
+      "光が丘"
+    ]
+  },
+  {
+    line: lineMeta("JR", "中央・総武線", "JB", "#FFD400"),
+    minutes: 3,
+    stations: [
+      "三鷹",
+      "吉祥寺",
+      "西荻窪",
+      "荻窪",
+      "阿佐ケ谷",
+      "高円寺",
+      "中野",
+      "東中野",
+      "大久保",
+      "新宿",
+      "代々木",
+      "千駄ケ谷",
+      "信濃町",
+      "四ツ谷",
+      "市ケ谷",
+      "飯田橋",
+      "水道橋",
+      "御茶ノ水",
+      "秋葉原",
+      "浅草橋",
+      "両国",
+      "錦糸町",
+      "亀戸",
+      "平井",
+      "新小岩",
+      "小岩"
+    ]
   }
 ];
 
-const EDGES = [...DIRECT_EDGES, ...LINE_NETWORKS.flatMap(({ stations, minutes }) => toEdges(stations, minutes))];
+const EDGES: EdgeTuple[] = [
+  ...DIRECT_EDGES.map(([from, to, minutes]) => [from, to, minutes, TRANSFER_LINE] as EdgeTuple),
+  ...LINE_NETWORKS.flatMap(({ stations, minutes, line }) => toEdges(stations, minutes, line))
+];
 const graph = buildGraph(EDGES);
 const stationNames = Array.from(graph.keys()).sort((a, b) => a.localeCompare(b, "ja"));
 
 export function MeetupPlanner() {
   const [destination, setDestination] = useState(DEFAULT_STATE.destination);
   const [departureTime, setDepartureTime] = useState(DEFAULT_STATE.departureTime);
+  const [currentClock, setCurrentClock] = useState("");
   const [priority, setPriority] = useState<Priority>(DEFAULT_STATE.priority);
   const [people, setPeople] = useState<Person[]>(DEFAULT_STATE.people);
   const [hasSearched, setHasSearched] = useState(false);
@@ -343,7 +627,19 @@ export function MeetupPlanner() {
       setPriority(restored.priority);
       setPeople(restored.people);
       setHasSearched(true);
+    } else {
+      setDepartureTime(getCurrentClock());
     }
+  }, []);
+
+  useEffect(() => {
+    function syncClock() {
+      setCurrentClock(getCurrentClock());
+    }
+
+    syncClock();
+    const timer = window.setInterval(syncClock, 30_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -497,6 +793,11 @@ export function MeetupPlanner() {
                 value={departureTime}
                 onChange={(event) => setDepartureTime(event.target.value)}
               />
+              <p className="field-hint">
+                {departureTime === currentClock
+                  ? `現在時刻 ${currentClock || "--:--"} を基準にしています`
+                  : `指定時刻 ${departureTime || "--:--"}（現在 ${currentClock || "--:--"}）`}
+              </p>
             </div>
 
             <div className="field">
@@ -628,6 +929,7 @@ export function MeetupPlanner() {
                               {route.duration}分 / {formatClock(route.arrivalTime)}着
                             </span>
                           </div>
+                          <LineBadges lines={route.lines} />
                           <p className="route-path">{route.path.join(" → ")}</p>
                         </div>
                       ))}
@@ -637,6 +939,7 @@ export function MeetupPlanner() {
                             <strong>合流後</strong>
                             <span>約{candidate.onwardDuration}分</span>
                           </div>
+                          <LineBadges lines={candidate.onwardLines} />
                           <p className="route-path">{candidate.onwardPath.join(" → ")}</p>
                         </div>
                       ) : null}
@@ -722,6 +1025,24 @@ function StationInput({
   );
 }
 
+function LineBadges({ lines }: { lines: LineMeta[] }) {
+  const visibleLines = uniqueLines(lines).slice(0, 5);
+  if (visibleLines.length === 0) return null;
+
+  return (
+    <div className="line-badges" aria-label="利用路線">
+      {visibleLines.map((line) => (
+        <span className="line-badge" key={`${line.operator}-${line.name}`}>
+          <span className="line-symbol" style={{ backgroundColor: line.color }}>
+            {line.symbol}
+          </span>
+          {line.operator} {line.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function findStationSuggestions(value: string) {
   const query = normalizeStation(value);
   if (!query) return stationNames.slice(0, 8);
@@ -740,18 +1061,18 @@ function resolveStationName(value: string) {
   return stationNames.find((station) => normalizeStation(station) === normalized) ?? null;
 }
 
-function toEdges(stations: string[], minutes: number): Array<[string, string, number]> {
-  return stations.slice(0, -1).map((station, index) => [station, stations[index + 1], minutes]);
+function toEdges(stations: string[], minutes: number, line: LineMeta): EdgeTuple[] {
+  return stations.slice(0, -1).map((station, index) => [station, stations[index + 1], minutes, line]);
 }
 
-function buildGraph(edges: Array<[string, string, number]>) {
-  const map = new Map<string, Array<{ station: string; minutes: number }>>();
+function buildGraph(edges: EdgeTuple[]) {
+  const map = new Map<string, GraphEdge[]>();
 
-  for (const [from, to, minutes] of edges) {
+  for (const [from, to, minutes, line] of edges) {
     if (!map.has(from)) map.set(from, []);
     if (!map.has(to)) map.set(to, []);
-    map.get(from)?.push({ station: to, minutes });
-    map.get(to)?.push({ station: from, minutes });
+    map.get(from)?.push({ station: to, minutes, line });
+    map.get(to)?.push({ station: from, minutes, line });
   }
 
   return map;
@@ -800,11 +1121,13 @@ function calculateCandidates(state: AppState) {
         isReachable = false;
         break;
       }
+      const path = reconstructPath(routeMap.previous, person.origin, station);
       routes.push({
         person,
         duration,
         arrivalTime: departureMinutes + duration,
-        path: reconstructPath(routeMap.previous, person.origin, station)
+        path,
+        lines: linesForPath(path)
       });
     }
 
@@ -837,6 +1160,7 @@ function calculateCandidates(state: AppState) {
       destinationTime,
       onwardDuration,
       onwardPath: reconstructPath(destinationRoutes.previous, destination, station).reverse(),
+      onwardLines: linesForPath(reconstructPath(destinationRoutes.previous, destination, station).reverse()),
       waitingTotal,
       score,
       routes
@@ -863,6 +1187,33 @@ function scoreCandidate(
 function routePassesDestinationBeforeMeetup(path: string[], destination: string) {
   const destinationIndex = path.indexOf(destination);
   return destinationIndex >= 0 && destinationIndex < path.length - 1;
+}
+
+function linesForPath(path: string[]) {
+  const lines: LineMeta[] = [];
+
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const from = path[index];
+    const to = path[index + 1];
+    const edge = graph.get(from)?.find((candidate) => candidate.station === to);
+    if (edge) lines.push(edge.line);
+  }
+
+  return uniqueLines(lines);
+}
+
+function uniqueLines(lines: LineMeta[]) {
+  const seen = new Set<string>();
+  const unique: LineMeta[] = [];
+
+  for (const line of lines) {
+    const key = `${line.operator}-${line.name}-${line.symbol}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(line);
+  }
+
+  return unique;
 }
 
 function dijkstra(start: string): DijkstraResult {
@@ -1132,6 +1483,14 @@ function formatShareText(candidate: Candidate, state: AppState) {
 function parseClock(value: string) {
   const [hours, minutes] = value.split(":").map((part) => Number.parseInt(part, 10));
   return hours * 60 + minutes;
+}
+
+function getCurrentClock() {
+  const now = new Date();
+  return `${now.getHours().toString().padStart(2, "0")}:${now
+    .getMinutes()
+    .toString()
+    .padStart(2, "0")}`;
 }
 
 function formatClock(totalMinutes: number) {
