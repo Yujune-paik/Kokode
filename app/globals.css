@@ -216,6 +216,18 @@ button {
   font-weight: 700;
 }
 
+.suggestion-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestion-item small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .suggestion-item:hover,
 .suggestion-item:focus {
   color: var(--teal-dark);

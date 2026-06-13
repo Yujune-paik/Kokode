@@ -20,6 +20,13 @@ type Person = {
   origin: string;
 };
 
+type StationSuggestion = {
+  name: string;
+  yomi?: string;
+  prefecture?: string;
+  source: "local" | "ekispert";
+};
+
 type AppState = {
   destination: string;
   departureTime: string;
@@ -985,8 +992,49 @@ function StationInput({
   compact?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
-  const suggestions = useMemo(() => findStationSuggestions(value), [value]);
+  const [remoteSuggestions, setRemoteSuggestions] = useState<StationSuggestion[]>([]);
+  const localSuggestions = useMemo(() => findStationSuggestions(value), [value]);
+  const suggestions = useMemo(
+    () => mergeStationSuggestions(localSuggestions, remoteSuggestions),
+    [localSuggestions, remoteSuggestions]
+  );
   const showSuggestions = focused && suggestions.length > 0;
+
+  useEffect(() => {
+    const query = value.trim();
+    if (!focused || query.length < 1) {
+      setRemoteSuggestions([]);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/stations?q=${encodeURIComponent(query)}`);
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          stations?: Array<{ name: string; yomi?: string; prefecture?: string }>;
+        };
+        if (!cancelled) {
+          setRemoteSuggestions(
+            (data.stations ?? []).map((station) => ({
+              name: station.name,
+              yomi: station.yomi,
+              prefecture: station.prefecture,
+              source: "ekispert"
+            }))
+          );
+        }
+      } catch {
+        if (!cancelled) setRemoteSuggestions([]);
+      }
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [focused, value]);
 
   return (
     <div className={compact ? "field station-field compact-field" : "field station-field"}>
@@ -1007,16 +1055,17 @@ function StationInput({
           {suggestions.map((station) => (
             <button
               className="suggestion-item"
-              key={station}
+              key={`${station.source}-${station.name}`}
               type="button"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
-                onChange(station);
+                onChange(station.name);
                 setFocused(false);
               }}
             >
               <MapPin size={14} />
-              {station}
+              <span>{station.name}</span>
+              {station.prefecture ? <small>{station.prefecture}</small> : null}
             </button>
           ))}
         </div>
@@ -1045,11 +1094,31 @@ function LineBadges({ lines }: { lines: LineMeta[] }) {
 
 function findStationSuggestions(value: string) {
   const query = normalizeStation(value);
-  if (!query) return stationNames.slice(0, 8);
+  if (!query) {
+    return stationNames.slice(0, 8).map((name) => ({ name, source: "local" as const }));
+  }
 
   return stationNames
     .filter((station) => normalizeStation(station).includes(query))
-    .slice(0, 8);
+    .slice(0, 8)
+    .map((name) => ({ name, source: "local" as const }));
+}
+
+function mergeStationSuggestions(
+  localSuggestions: StationSuggestion[],
+  remoteSuggestions: StationSuggestion[]
+) {
+  const merged: StationSuggestion[] = [];
+  const seen = new Set<string>();
+
+  for (const station of [...remoteSuggestions, ...localSuggestions]) {
+    const key = normalizeStation(station.name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(station);
+  }
+
+  return merged.slice(0, 12);
 }
 
 function normalizeStation(value: string) {
