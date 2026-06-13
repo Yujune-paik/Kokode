@@ -4,11 +4,9 @@ import {
   Copy,
   MapPin,
   Plus,
-  Route,
   Search,
   Share2,
-  Trash2,
-  UsersRound
+  Trash2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -673,7 +671,6 @@ export function MeetupPlanner() {
   const [refinedCandidates, setRefinedCandidates] = useState<Candidate[]>([]);
   const [isRefiningRoutes, setIsRefiningRoutes] = useState(false);
   const [liffClient, setLiffClient] = useState<LiffLike | null>(null);
-  const [liffStatus, setLiffStatus] = useState("Webアプリ");
 
   const appState = useMemo<AppState>(
     () => ({ destination, departureTime, priority, people }),
@@ -706,7 +703,6 @@ export function MeetupPlanner() {
   useEffect(() => {
     const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
     if (!liffId) {
-      setLiffStatus("LIFF ID未設定");
       return;
     }
 
@@ -720,12 +716,9 @@ export function MeetupPlanner() {
         await liff.init({ liffId: effectiveLiffId });
         if (!cancelled) {
           setLiffClient(liff);
-          setLiffStatus(liff.isInClient() ? "LIFFで起動中" : "Webで起動中");
         }
       } catch {
-        if (!cancelled) {
-          setLiffStatus("LIFF初期化失敗");
-        }
+        // LIFFが初期化できない場合も通常のWebアプリとして動かす。
       }
     }
 
@@ -859,17 +852,13 @@ export function MeetupPlanner() {
         <div className="brand-row">
           <div className="brand">
             <div className="brand-mark" aria-hidden="true">
-              <Route size={22} />
+              <img src="/kokode.png" alt="" />
             </div>
             <div>
-              <h1>集合先ナビ</h1>
+              <h1>KOKODE</h1>
               <p>大切な人との「どこ集合？」をすぐ決めます。</p>
             </div>
           </div>
-          <span className="status-pill">
-            <UsersRound size={15} />
-            {liffStatus}
-          </span>
         </div>
       </header>
 
