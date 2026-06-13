@@ -145,6 +145,14 @@ button {
   gap: 7px;
 }
 
+.station-field {
+  position: relative;
+}
+
+.compact-field {
+  gap: 0;
+}
+
 .field label,
 .section-label {
   color: #33413c;
@@ -168,6 +176,39 @@ button {
 .select:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
+.suggestion-list {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  display: grid;
+  max-height: 248px;
+  overflow: auto;
+  border: 1px solid #c9d2cd;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(21, 32, 28, 0.16);
+}
+
+.suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 9px 11px;
+  color: var(--ink);
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.suggestion-item:hover,
+.suggestion-item:focus {
+  color: var(--teal-dark);
+  background: var(--mint);
 }
 
 .people-list {
@@ -387,6 +428,7 @@ button {
   color: var(--teal-dark);
   font-size: 0.88rem;
   font-weight: 700;
+  line-height: 1.5;
 }
 
 .error {

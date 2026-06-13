@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Clipboard,
   Copy,
   MapPin,
   Plus,
@@ -54,45 +53,14 @@ type DijkstraResult = {
 type LiffLike = {
   init: (options: { liffId: string }) => Promise<void>;
   isInClient: () => boolean;
+  isLoggedIn: () => boolean;
+  login: (options?: { redirectUri?: string }) => void;
   isApiAvailable: (apiName: string) => boolean;
-  shareTargetPicker: (messages: Array<{ type: "text"; text: string }>) => Promise<unknown>;
+  shareTargetPicker: (
+    messages: Array<{ type: "text"; text: string }>,
+    options?: { isMultiple?: boolean }
+  ) => Promise<unknown>;
 };
-
-const EDGES: Array<[string, string, number]> = [
-  ["ひばりヶ丘", "池袋", 18],
-  ["ひばりヶ丘", "小竹向原", 21],
-  ["小竹向原", "新宿三丁目", 13],
-  ["小竹向原", "池袋", 8],
-  ["池袋", "新宿三丁目", 9],
-  ["池袋", "上野", 17],
-  ["新宿三丁目", "新宿", 2],
-  ["新宿三丁目", "渋谷", 7],
-  ["新宿", "渋谷", 5],
-  ["新宿", "東京", 14],
-  ["渋谷", "表参道", 2],
-  ["表参道", "大手町", 15],
-  ["渋谷", "横浜", 25],
-  ["横浜", "品川", 17],
-  ["品川", "東京", 8],
-  ["東京", "大手町", 2],
-  ["東京", "上野", 8],
-  ["中目黒", "渋谷", 4],
-  ["中目黒", "六本木", 9],
-  ["六本木", "大手町", 13],
-  ["吉祥寺", "新宿", 16],
-  ["吉祥寺", "渋谷", 18],
-  ["立川", "新宿", 27],
-  ["立川", "吉祥寺", 16],
-  ["浦和", "池袋", 20],
-  ["浦和", "上野", 22],
-  ["北千住", "上野", 10],
-  ["北千住", "大手町", 18],
-  ["舞浜", "東京", 16],
-  ["舞浜", "新木場", 6],
-  ["新木場", "渋谷", 24],
-  ["自由が丘", "渋谷", 10],
-  ["自由が丘", "横浜", 21]
-];
 
 const PRIORITY_LABELS: Record<Priority, string> = {
   balanced: "移動時間バランス",
@@ -110,6 +78,167 @@ const DEFAULT_STATE: AppState = {
   ]
 };
 
+const DIRECT_EDGES: Array<[string, string, number]> = [
+  ["ひばりヶ丘", "池袋", 18],
+  ["ひばりヶ丘", "小竹向原", 21],
+  ["小竹向原", "新宿三丁目", 13],
+  ["小竹向原", "池袋", 8],
+  ["新宿三丁目", "新宿", 2],
+  ["新宿三丁目", "渋谷", 7],
+  ["渋谷", "表参道", 2],
+  ["表参道", "大手町", 15],
+  ["大手町", "東京", 2],
+  ["中目黒", "渋谷", 4],
+  ["中目黒", "六本木", 9],
+  ["六本木", "大手町", 13],
+  ["北千住", "上野", 10],
+  ["北千住", "大手町", 18],
+  ["舞浜", "東京", 16],
+  ["舞浜", "新木場", 6],
+  ["新木場", "渋谷", 24],
+  ["自由が丘", "渋谷", 10],
+  ["自由が丘", "横浜", 21],
+  ["横浜", "渋谷", 25],
+  ["横浜", "品川", 17],
+  ["品川", "東京", 8],
+  ["浦和", "池袋", 20],
+  ["浦和", "上野", 22],
+  ["立川", "新宿", 27],
+  ["立川", "吉祥寺", 16],
+  ["吉祥寺", "渋谷", 18]
+];
+
+const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
+  {
+    minutes: 3,
+    stations: [
+      "東京",
+      "神田",
+      "秋葉原",
+      "御徒町",
+      "上野",
+      "鶯谷",
+      "日暮里",
+      "西日暮里",
+      "田端",
+      "駒込",
+      "巣鴨",
+      "大塚",
+      "池袋",
+      "目白",
+      "高田馬場",
+      "新大久保",
+      "新宿",
+      "代々木",
+      "原宿",
+      "渋谷",
+      "恵比寿",
+      "目黒",
+      "五反田",
+      "大崎",
+      "品川",
+      "高輪ゲートウェイ",
+      "田町",
+      "浜松町",
+      "新橋",
+      "有楽町",
+      "東京"
+    ]
+  },
+  {
+    minutes: 4,
+    stations: [
+      "東京",
+      "四ツ谷",
+      "新宿",
+      "中野",
+      "荻窪",
+      "吉祥寺",
+      "三鷹",
+      "国分寺",
+      "立川",
+      "八王子",
+      "高尾"
+    ]
+  },
+  {
+    minutes: 4,
+    stations: ["新宿", "池袋", "赤羽", "武蔵浦和", "大宮", "川越"]
+  },
+  {
+    minutes: 4,
+    stations: ["上野", "赤羽", "浦和", "さいたま新都心", "大宮"]
+  },
+  {
+    minutes: 4,
+    stations: ["大宮", "浦和", "赤羽", "上野", "東京", "新橋", "品川", "川崎", "横浜", "桜木町"]
+  },
+  {
+    minutes: 4,
+    stations: ["東京", "新橋", "品川", "川崎", "横浜", "戸塚", "大船", "藤沢", "辻堂", "茅ケ崎"]
+  },
+  {
+    minutes: 4,
+    stations: ["東京", "八丁堀", "新木場", "舞浜", "新浦安", "海浜幕張", "蘇我"]
+  },
+  {
+    minutes: 4,
+    stations: ["渋谷", "中目黒", "自由が丘", "武蔵小杉", "日吉", "菊名", "横浜"]
+  },
+  {
+    minutes: 3,
+    stations: ["池袋", "小竹向原", "練馬", "石神井公園", "ひばりヶ丘", "所沢", "飯能"]
+  },
+  {
+    minutes: 3,
+    stations: ["新宿", "下北沢", "登戸", "新百合ヶ丘", "町田", "相模大野", "海老名"]
+  },
+  {
+    minutes: 3,
+    stations: ["渋谷", "下北沢", "明大前", "調布", "府中", "分倍河原", "橋本"]
+  },
+  {
+    minutes: 3,
+    stations: [
+      "池袋",
+      "新大塚",
+      "茗荷谷",
+      "後楽園",
+      "大手町",
+      "東京",
+      "銀座",
+      "霞ケ関",
+      "赤坂見附",
+      "四ツ谷",
+      "新宿三丁目",
+      "新宿",
+      "中野坂上",
+      "荻窪"
+    ]
+  },
+  {
+    minutes: 3,
+    stations: ["浅草", "上野", "銀座", "新橋", "表参道", "渋谷"]
+  },
+  {
+    minutes: 3,
+    stations: ["中目黒", "恵比寿", "六本木", "霞ケ関", "銀座", "秋葉原", "上野", "北千住"]
+  },
+  {
+    minutes: 3,
+    stations: ["代々木上原", "表参道", "赤坂", "霞ケ関", "日比谷", "大手町", "西日暮里", "北千住"]
+  },
+  {
+    minutes: 3,
+    stations: ["和光市", "小竹向原", "池袋", "飯田橋", "有楽町", "豊洲", "新木場"]
+  },
+  {
+    minutes: 3,
+    stations: ["押上", "錦糸町", "住吉", "清澄白河", "大手町", "永田町", "青山一丁目", "渋谷"]
+  }
+];
+
+const EDGES = [...DIRECT_EDGES, ...LINE_NETWORKS.flatMap(({ stations, minutes }) => toEdges(stations, minutes))];
 const graph = buildGraph(EDGES);
 const stationNames = Array.from(graph.keys()).sort((a, b) => a.localeCompare(b, "ja"));
 
@@ -208,12 +337,20 @@ export function MeetupPlanner() {
     setToast("");
 
     try {
-      if (
-        liffClient?.isInClient() &&
-        liffClient.isApiAvailable("shareTargetPicker")
-      ) {
-        await liffClient.shareTargetPicker([{ type: "text", text }]);
+      if (liffClient?.isApiAvailable("shareTargetPicker")) {
+        if (!liffClient.isLoggedIn()) {
+          setToast("LINEログイン後に共有画面を開きます");
+          liffClient.login({ redirectUri: window.location.href });
+          return;
+        }
+        await liffClient.shareTargetPicker([{ type: "text", text }], { isMultiple: true });
         setToast("LINEで共有しました");
+        return;
+      }
+
+      if (liffClient) {
+        await copyToClipboard(text);
+        setToast("LINE共有が未有効です。LINE Developers ConsoleでShare target pickerを有効にしてください。共有文はコピーしました。");
         return;
       }
 
@@ -251,7 +388,7 @@ export function MeetupPlanner() {
             </div>
             <div>
               <h1>集合先ナビ</h1>
-              <p>出発地が違うメンバーの集合しやすい駅を探します。</p>
+              <p>大切な人との「どこ集合？」をすぐ決めます。</p>
             </div>
           </div>
           <span className="status-pill">
@@ -264,17 +401,13 @@ export function MeetupPlanner() {
       <div className="layout-grid">
         <section className="input-panel" aria-label="検索条件">
           <div className="field-grid">
-            <div className="field">
-              <label htmlFor="destination">行き先</label>
-              <input
-                id="destination"
-                className="input"
-                list="station-list"
-                value={destination}
-                onChange={(event) => setDestination(event.target.value)}
-                placeholder="例：渋谷"
-              />
-            </div>
+            <StationInput
+              id="destination"
+              label="行き先"
+              value={destination}
+              onChange={setDestination}
+              placeholder="例：渋谷"
+            />
 
             <div className="field">
               <label htmlFor="departure-time">出発時刻</label>
@@ -316,13 +449,13 @@ export function MeetupPlanner() {
                   placeholder="名前"
                 />
                 <div className="person-actions">
-                  <input
-                    className="input"
-                    list="station-list"
-                    aria-label={`${person.name || index + 1 + "人目"}の現在地`}
+                  <StationInput
+                    id={`origin-${person.id}`}
+                    label={`${person.name || index + 1 + "人目"}の現在地`}
                     value={person.origin}
-                    onChange={(event) => updatePerson(person.id, { origin: event.target.value })}
+                    onChange={(value) => updatePerson(person.id, { origin: value })}
                     placeholder="例：横浜"
+                    compact
                   />
                   <button
                     className="btn btn-danger"
@@ -439,7 +572,7 @@ export function MeetupPlanner() {
           <aside className="empty-state">
             <h2>駅名候補</h2>
             <div className="station-chips">
-              {stationNames.slice(0, 14).map((station) => (
+              {stationNames.slice(0, 20).map((station) => (
                 <span className="chip" key={station}>
                   <MapPin size={12} />
                   {station}
@@ -451,6 +584,79 @@ export function MeetupPlanner() {
       </div>
     </main>
   );
+}
+
+function StationInput({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder,
+  compact = false
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  compact?: boolean;
+}) {
+  const [focused, setFocused] = useState(false);
+  const suggestions = useMemo(() => findStationSuggestions(value), [value]);
+  const showSuggestions = focused && suggestions.length > 0;
+
+  return (
+    <div className={compact ? "field station-field compact-field" : "field station-field"}>
+      {!compact ? <label htmlFor={id}>{label}</label> : null}
+      <input
+        id={id}
+        className="input"
+        list="station-list"
+        aria-label={label}
+        value={value}
+        onBlur={() => window.setTimeout(() => setFocused(false), 120)}
+        onChange={(event) => onChange(event.target.value)}
+        onFocus={() => setFocused(true)}
+        placeholder={placeholder}
+      />
+      {showSuggestions ? (
+        <div className="suggestion-list">
+          {suggestions.map((station) => (
+            <button
+              className="suggestion-item"
+              key={station}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(station);
+                setFocused(false);
+              }}
+            >
+              <MapPin size={14} />
+              {station}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function findStationSuggestions(value: string) {
+  const query = normalizeStation(value);
+  if (!query) return stationNames.slice(0, 8);
+
+  return stationNames
+    .filter((station) => normalizeStation(station).includes(query))
+    .slice(0, 8);
+}
+
+function normalizeStation(value: string) {
+  return value.trim().toLocaleLowerCase("ja-JP").replace(/駅$/u, "");
+}
+
+function toEdges(stations: string[], minutes: number): Array<[string, string, number]> {
+  return stations.slice(0, -1).map((station, index) => [station, stations[index + 1], minutes]);
 }
 
 function buildGraph(edges: Array<[string, string, number]>) {
@@ -468,7 +674,7 @@ function buildGraph(edges: Array<[string, string, number]>) {
 
 function validateState(state: AppState) {
   if (!state.destination.trim()) return "行き先を入力してください。";
-  if (!graph.has(state.destination.trim())) return `行き先「${state.destination}」は仮ネットワークにありません。`;
+  if (!graph.has(state.destination.trim())) return `行き先「${state.destination}」は現在の駅ネットワークにありません。`;
   if (!state.departureTime) return "出発時刻を入力してください。";
   if (state.people.length === 0) return "参加者を1人以上入力してください。";
 
@@ -476,7 +682,7 @@ function validateState(state: AppState) {
   if (emptyPerson) return "参加者の名前と現在地を入力してください。";
 
   const unknownOrigin = state.people.find((person) => !graph.has(person.origin.trim()));
-  if (unknownOrigin) return `現在地「${unknownOrigin.origin}」は仮ネットワークにありません。`;
+  if (unknownOrigin) return `現在地「${unknownOrigin.origin}」は現在の駅ネットワークにありません。`;
 
   return "";
 }
@@ -611,6 +817,8 @@ function reconstructPath(previous: Map<string, string>, from: string, to: string
 
 function formatShareText(candidate: Candidate, state: AppState) {
   const lines = [
+    "ここで集合しない？",
+    "",
     `集合先：${candidate.station}`,
     `行き先：${state.destination.trim()}`,
     `集合目安：${formatClock(candidate.gatherTime)}ごろ`,
