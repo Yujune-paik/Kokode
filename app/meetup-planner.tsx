@@ -756,10 +756,13 @@ export function MeetupPlanner() {
       setIsRefiningRoutes(true);
 
       try {
-        const candidateSeeds = await expandCandidatesWithEkispertRoutes(baseCandidates, appState);
-        const refined = await Promise.all(
-          candidateSeeds.map((candidate) => refineCandidateWithEkispert(candidate, appState))
-        );
+        const ekispertSeeds = await buildEkispertCandidateSeeds(baseCandidates, appState);
+        const candidateSeeds = ekispertSeeds ?? calculateFallbackCandidates(appState).slice(0, 5);
+        const refined = ekispertSeeds
+          ? await Promise.all(
+              candidateSeeds.map((candidate) => refineCandidateWithEkispert(candidate, appState))
+            )
+          : candidateSeeds;
         if (!cancelled) {
           const nextCandidates = refined
             .filter((candidate): candidate is Candidate => Boolean(candidate))
@@ -1339,6 +1342,18 @@ function calculateCandidates(state: AppState) {
     name: person.name.trim(),
     origin: resolveStationName(person.origin) ?? person.origin.trim()
   }));
+
+  return [buildDirectDestinationCandidate(destination, cleanPeople, departureMinutes, state.priority)];
+}
+
+function calculateFallbackCandidates(state: AppState) {
+  const departureMinutes = parseClock(state.departureTime);
+  const destination = resolveStationName(state.destination) ?? state.destination.trim();
+  const cleanPeople = state.people.map((person) => ({
+    ...person,
+    name: person.name.trim(),
+    origin: resolveStationName(person.origin) ?? person.origin.trim()
+  }));
   const canUseLocalGraph =
     graph.has(destination) && cleanPeople.every((person) => graph.has(person.origin));
 
@@ -1462,7 +1477,7 @@ function buildDirectDestinationCandidate(
   };
 }
 
-async function expandCandidatesWithEkispertRoutes(baseCandidates: Candidate[], state: AppState) {
+async function buildEkispertCandidateSeeds(baseCandidates: Candidate[], state: AppState) {
   const shouldExpand =
     baseCandidates.length === 1 &&
     baseCandidates[0].isDirectDestination &&
@@ -1470,7 +1485,7 @@ async function expandCandidatesWithEkispertRoutes(baseCandidates: Candidate[], s
       route.legs.some((leg) => leg.lineName === "経路確認中")
     );
 
-  if (!shouldExpand) return baseCandidates;
+  if (!shouldExpand) return null;
 
   const departureMinutes = parseClock(state.departureTime);
   const destination = resolveStationName(state.destination) ?? state.destination.trim();
@@ -1486,7 +1501,7 @@ async function expandCandidatesWithEkispertRoutes(baseCandidates: Candidate[], s
     )
   );
 
-  if (directRoutes.some((route) => !route)) return baseCandidates;
+  if (directRoutes.some((route) => !route)) return null;
 
   const availableDirectRoutes = directRoutes as EkispertRoute[];
   const directCandidate = buildCandidateFromKnownRoutes({
@@ -1643,6 +1658,12 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
   let usedEkispert = false;
 
   for (const route of candidate.routes) {
+    if (!isPendingRoute(route)) {
+      usedEkispert = true;
+      refinedRoutes.push(route);
+      continue;
+    }
+
     const ekispertRoute = await fetchEkispertRoute(
       route.person.origin,
       candidate.station,
@@ -1717,6 +1738,10 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
     score: usedEkispert || onwardEkispertRoute ? score - 2 : score,
     routes: refinedRoutes
   };
+}
+
+function isPendingRoute(route: RouteResult) {
+  return route.legs.length === 0 || route.legs.some((leg) => leg.lineName === "経路確認中");
 }
 
 async function fetchEkispertRoute(from: string, to: string, departureTime: string, priority: Priority) {
