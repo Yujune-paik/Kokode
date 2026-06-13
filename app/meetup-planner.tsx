@@ -8,7 +8,7 @@ import {
   Share2,
   Trash2
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Priority = "balanced" | "fast" | "fair";
 
@@ -671,6 +671,7 @@ export function MeetupPlanner() {
   const [refinedCandidates, setRefinedCandidates] = useState<Candidate[]>([]);
   const [isRefiningRoutes, setIsRefiningRoutes] = useState(false);
   const [liffClient, setLiffClient] = useState<LiffLike | null>(null);
+  const resultsRef = useRef<HTMLElement | null>(null);
 
   const appState = useMemo<AppState>(
     () => ({ destination, departureTime, priority, people }),
@@ -797,6 +798,9 @@ export function MeetupPlanner() {
     if (!validateState(appState)) {
       replaceUrlState(appState);
     }
+    window.setTimeout(() => {
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
   }
 
   async function handleShare(candidate: Candidate) {
@@ -952,7 +956,7 @@ export function MeetupPlanner() {
         </section>
 
         {hasSearched ? (
-          <section className="results-panel" aria-label="検索結果">
+          <section className="results-panel" aria-label="検索結果" ref={resultsRef}>
             <div className="panel-heading">
               <h2>候補</h2>
               <button
