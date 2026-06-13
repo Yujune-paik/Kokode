@@ -36,6 +36,7 @@ type RouteResult = {
 
 type Candidate = {
   station: string;
+  isDirectDestination: boolean;
   gatherTime: number;
   destinationTime: number;
   onwardDuration: number;
@@ -50,6 +51,19 @@ type DijkstraResult = {
   previous: Map<string, string>;
 };
 
+type LineTextMessage = {
+  type: "text";
+  text: string;
+};
+
+type LineFlexMessage = {
+  type: "flex";
+  altText: string;
+  contents: Record<string, unknown>;
+};
+
+type LineMessage = LineTextMessage | LineFlexMessage;
+
 type LiffLike = {
   init: (options: { liffId: string }) => Promise<void>;
   isInClient: () => boolean;
@@ -57,7 +71,7 @@ type LiffLike = {
   login: (options?: { redirectUri?: string }) => void;
   isApiAvailable: (apiName: string) => boolean;
   shareTargetPicker: (
-    messages: Array<{ type: "text"; text: string }>,
+    messages: LineMessage[],
     options?: { isMultiple?: boolean }
   ) => Promise<unknown>;
 };
@@ -334,6 +348,7 @@ export function MeetupPlanner() {
 
   async function handleShare(candidate: Candidate) {
     const text = formatShareText(candidate, appState);
+    const flexMessage = buildShareFlexMessage(candidate, appState);
     setToast("");
 
     try {
@@ -343,7 +358,7 @@ export function MeetupPlanner() {
           liffClient.login({ redirectUri: window.location.href });
           return;
         }
-        await liffClient.shareTargetPicker([{ type: "text", text }], { isMultiple: true });
+        await liffClient.shareTargetPicker([flexMessage], { isMultiple: true });
         setToast("LINEで共有しました");
         return;
       }
@@ -519,6 +534,9 @@ export function MeetupPlanner() {
                       <div className="station-title">
                         <span className="rank">{index + 1}</span>
                         <h3>{candidate.station}</h3>
+                        {candidate.isDirectDestination ? (
+                          <span className="direct-badge">現地集合</span>
+                        ) : null}
                       </div>
                       <button
                         className="btn btn-primary"
@@ -536,7 +554,7 @@ export function MeetupPlanner() {
                         <strong>{formatClock(candidate.gatherTime)}ごろ</strong>
                       </div>
                       <div className="metric">
-                        <span>目的地到着目安</span>
+                        <span>{candidate.isDirectDestination ? "現地到着目安" : "目的地到着目安"}</span>
                         <strong>{formatClock(candidate.destinationTime)}ごろ</strong>
                       </div>
                     </div>
@@ -553,13 +571,15 @@ export function MeetupPlanner() {
                           <p className="route-path">{route.path.join(" → ")}</p>
                         </div>
                       ))}
-                      <div className="route-item">
-                        <div className="route-title">
-                          <strong>合流後</strong>
-                          <span>約{candidate.onwardDuration}分</span>
+                      {!candidate.isDirectDestination ? (
+                        <div className="route-item">
+                          <div className="route-title">
+                            <strong>合流後</strong>
+                            <span>約{candidate.onwardDuration}分</span>
+                          </div>
+                          <p className="route-path">{candidate.onwardPath.join(" → ")}</p>
                         </div>
-                        <p className="route-path">{candidate.onwardPath.join(" → ")}</p>
-                      </div>
+                      ) : null}
                     </div>
                   </article>
                 ))}
@@ -702,6 +722,7 @@ function calculateCandidates(state: AppState) {
   for (const station of stationNames) {
     const onwardDuration = destinationRoutes.distances.get(station);
     if (onwardDuration === undefined) continue;
+    const isDirectDestination = station === destination;
 
     const routes: RouteResult[] = [];
     let isReachable = true;
@@ -723,16 +744,30 @@ function calculateCandidates(state: AppState) {
     }
 
     if (!isReachable) continue;
+    if (
+      !isDirectDestination &&
+      routes.some((route) => routePassesDestinationBeforeMeetup(route.path, destination))
+    ) {
+      continue;
+    }
 
     const gatherTime = Math.max(...routes.map((route) => route.arrivalTime));
     const destinationTime = gatherTime + onwardDuration;
     const waitingTotal = routes.reduce((sum, route) => sum + (gatherTime - route.arrivalTime), 0);
     const durations = routes.map((route) => route.duration);
     const spread = Math.max(...durations) - Math.min(...durations);
-    const score = scoreCandidate(state.priority, destinationTime, waitingTotal, spread, gatherTime);
+    const score = scoreCandidate(
+      state.priority,
+      destinationTime,
+      waitingTotal,
+      spread,
+      gatherTime,
+      isDirectDestination
+    );
 
     candidates.push({
       station,
+      isDirectDestination,
       gatherTime,
       destinationTime,
       onwardDuration,
@@ -751,11 +786,18 @@ function scoreCandidate(
   destinationTime: number,
   waitingTotal: number,
   spread: number,
-  gatherTime: number
+  gatherTime: number,
+  isDirectDestination: boolean
 ) {
-  if (priority === "fast") return destinationTime + waitingTotal * 0.15;
-  if (priority === "fair") return spread * 4 + waitingTotal * 1.8 + destinationTime * 0.2;
-  return gatherTime + destinationTime * 0.45 + waitingTotal * 0.75 + spread * 1.5;
+  const directBonus = isDirectDestination ? -8 : 0;
+  if (priority === "fast") return destinationTime + waitingTotal * 0.1 + directBonus;
+  if (priority === "fair") return destinationTime * 0.8 + spread * 3 + waitingTotal * 1.5 + directBonus;
+  return destinationTime * 1.4 + gatherTime * 0.15 + waitingTotal * 0.6 + spread * 1.2 + directBonus;
+}
+
+function routePassesDestinationBeforeMeetup(path: string[], destination: string) {
+  const destinationIndex = path.indexOf(destination);
+  return destinationIndex >= 0 && destinationIndex < path.length - 1;
 }
 
 function dijkstra(start: string): DijkstraResult {
@@ -815,11 +857,187 @@ function reconstructPath(previous: Map<string, string>, from: string, to: string
   return path.reverse();
 }
 
+function buildShareFlexMessage(candidate: Candidate, state: AppState): LineFlexMessage {
+  const destination = state.destination.trim();
+  const routeItems = candidate.routes.slice(0, 5).flatMap((route) => [
+    {
+      type: "box",
+      layout: "vertical",
+      spacing: "xs",
+      margin: "md",
+      contents: [
+        {
+          type: "box",
+          layout: "horizontal",
+          contents: [
+            {
+              type: "text",
+              text: route.person.name,
+              weight: "bold",
+              size: "sm",
+              color: "#17231F",
+              flex: 1
+            },
+            {
+              type: "text",
+              text: `${route.duration}分 / ${formatClock(route.arrivalTime)}着`,
+              size: "xs",
+              color: "#66726D",
+              align: "end",
+              flex: 2
+            }
+          ]
+        },
+        {
+          type: "text",
+          text: route.path.join(" → "),
+          size: "xs",
+          color: "#485650",
+          wrap: true
+        }
+      ]
+    },
+    {
+      type: "separator",
+      margin: "md",
+      color: "#E4E8E3"
+    }
+  ]);
+
+  if (routeItems[routeItems.length - 1]?.type === "separator") {
+    routeItems.pop();
+  }
+
+  const contents: Record<string, unknown> = {
+    type: "bubble",
+    size: "mega",
+    body: {
+      type: "box",
+      layout: "vertical",
+      spacing: "md",
+      contents: [
+        {
+          type: "text",
+          text: candidate.isDirectDestination ? "現地集合でよさそう" : "ここで集合しない？",
+          size: "sm",
+          color: "#0F766E",
+          weight: "bold"
+        },
+        {
+          type: "text",
+          text: candidate.station,
+          size: "xxl",
+          weight: "bold",
+          color: "#17231F",
+          wrap: true
+        },
+        {
+          type: "text",
+          text: candidate.isDirectDestination ? `行き先：${destination}` : `行き先：${destination}`,
+          size: "sm",
+          color: "#66726D",
+          wrap: true
+        },
+        {
+          type: "box",
+          layout: "horizontal",
+          spacing: "sm",
+          contents: [
+            {
+              type: "box",
+              layout: "vertical",
+              backgroundColor: "#DFF3EA",
+              cornerRadius: "md",
+              paddingAll: "md",
+              contents: [
+                { type: "text", text: "集合目安", size: "xs", color: "#115E59", weight: "bold" },
+                {
+                  type: "text",
+                  text: `${formatClock(candidate.gatherTime)}ごろ`,
+                  size: "lg",
+                  weight: "bold",
+                  color: "#17231F"
+                }
+              ]
+            },
+            {
+              type: "box",
+              layout: "vertical",
+              backgroundColor: "#FFF1D6",
+              cornerRadius: "md",
+              paddingAll: "md",
+              contents: [
+                {
+                  type: "text",
+                  text: candidate.isDirectDestination ? "現地到着" : "目的地到着",
+                  size: "xs",
+                  color: "#7A3318",
+                  weight: "bold"
+                },
+                {
+                  type: "text",
+                  text: `${formatClock(candidate.destinationTime)}ごろ`,
+                  size: "lg",
+                  weight: "bold",
+                  color: "#17231F"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          type: "text",
+          text: "各自の行き方",
+          size: "sm",
+          color: "#17231F",
+          weight: "bold",
+          margin: "lg"
+        },
+        ...routeItems,
+        ...(candidate.isDirectDestination
+          ? []
+          : [
+              {
+                type: "box",
+                layout: "vertical",
+                spacing: "xs",
+                margin: "lg",
+                contents: [
+                  {
+                    type: "text",
+                    text: "合流後",
+                    size: "sm",
+                    weight: "bold",
+                    color: "#17231F"
+                  },
+                  {
+                    type: "text",
+                    text: `${candidate.onwardPath.join(" → ")} / 約${candidate.onwardDuration}分`,
+                    size: "xs",
+                    color: "#485650",
+                    wrap: true
+                  }
+                ]
+              }
+            ])
+      ]
+    }
+  };
+
+  return {
+    type: "flex",
+    altText: candidate.isDirectDestination
+      ? `現地集合：${candidate.station} ${formatClock(candidate.gatherTime)}ごろ`
+      : `集合先：${candidate.station} ${formatClock(candidate.gatherTime)}ごろ`,
+    contents
+  };
+}
+
 function formatShareText(candidate: Candidate, state: AppState) {
   const lines = [
-    "ここで集合しない？",
+    candidate.isDirectDestination ? "現地集合でよさそう" : "ここで集合しない？",
     "",
-    `集合先：${candidate.station}`,
+    `${candidate.isDirectDestination ? "現地集合" : "集合先"}：${candidate.station}`,
     `行き先：${state.destination.trim()}`,
     `集合目安：${formatClock(candidate.gatherTime)}ごろ`,
     `目的地到着目安：${formatClock(candidate.destinationTime)}ごろ`,
@@ -836,10 +1054,12 @@ function formatShareText(candidate: Candidate, state: AppState) {
     );
   }
 
-  lines.push(
-    `合流後：${candidate.station} → ${state.destination.trim()}`,
-    `約${candidate.onwardDuration}分`
-  );
+  if (!candidate.isDirectDestination) {
+    lines.push(
+      `合流後：${candidate.station} → ${state.destination.trim()}`,
+      `約${candidate.onwardDuration}分`
+    );
+  }
 
   return lines.join("\n");
 }

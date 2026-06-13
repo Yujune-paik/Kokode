@@ -70,11 +70,11 @@ https://your-app.vercel.app
 
 「この集合先を共有」ボタンは、以下の順で共有方法を選びます。
 
-1. LIFF 環境で `liff.shareTargetPicker()` が使える場合、LINE の友だちまたはグループに集合先と行き方を共有します。
+1. LIFF 環境で `liff.shareTargetPicker()` が使える場合、LINE の友だちまたはグループに集合先と行き方をカード形式の Flex Message で共有します。
 2. LIFF ではなく `navigator.share` が使える場合、スマホの共有シートを開きます。
 3. どちらも使えない場合、共有文をクリップボードにコピーします。
 
-共有文には URL ではなく、選択した集合先への行き方を含めます。
+Web Share やクリップボードコピーでは、URL ではなく選択した集合先への行き方を含むテキストを共有します。
 
 LINE の友だち/グループ選択画面を出すには、LINE Developers Console 側で Share target picker を有効にしてください。無効な場合、LIFF 初期化が成功していても `liff.shareTargetPicker()` は使えません。
 
