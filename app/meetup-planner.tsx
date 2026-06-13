@@ -62,6 +62,16 @@ type LineMeta = {
   color: string;
 };
 
+type EkispertRoute = {
+  duration: number;
+  path: string[];
+  lines: Array<{
+    name: string;
+    symbol: string;
+    color: string;
+  }>;
+};
+
 type EdgeTuple = [string, string, number, LineMeta];
 
 type GraphEdge = {
@@ -618,6 +628,8 @@ export function MeetupPlanner() {
   const [people, setPeople] = useState<Person[]>(DEFAULT_STATE.people);
   const [hasSearched, setHasSearched] = useState(false);
   const [toast, setToast] = useState("");
+  const [refinedCandidates, setRefinedCandidates] = useState<Candidate[]>([]);
+  const [isRefiningRoutes, setIsRefiningRoutes] = useState(false);
   const [liffClient, setLiffClient] = useState<LiffLike | null>(null);
   const [liffStatus, setLiffStatus] = useState("Webアプリ");
 
@@ -683,10 +695,45 @@ export function MeetupPlanner() {
   }, []);
 
   const validationMessage = validateState(appState);
-  const candidates = useMemo(
+  const baseCandidates = useMemo(
     () => (hasSearched && !validationMessage ? calculateCandidates(appState).slice(0, 5) : []),
     [appState, hasSearched, validationMessage]
   );
+  const candidates = refinedCandidates.length > 0 ? refinedCandidates : baseCandidates;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refineRoutes() {
+      if (!hasSearched || validationMessage || baseCandidates.length === 0) {
+        setRefinedCandidates([]);
+        return;
+      }
+
+      setRefinedCandidates(baseCandidates);
+      setIsRefiningRoutes(true);
+
+      try {
+        const refined = await Promise.all(
+          baseCandidates.map((candidate) => refineCandidateWithEkispert(candidate, appState))
+        );
+        if (!cancelled) {
+          const nextCandidates = refined
+            .filter((candidate): candidate is Candidate => Boolean(candidate))
+            .sort((a, b) => a.score - b.score || a.destinationTime - b.destinationTime);
+          setRefinedCandidates(nextCandidates.length > 0 ? nextCandidates : baseCandidates);
+        }
+      } finally {
+        if (!cancelled) setIsRefiningRoutes(false);
+      }
+    }
+
+    refineRoutes();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appState, baseCandidates, hasSearched, validationMessage]);
 
   function updatePerson(id: string, patch: Partial<Person>) {
     setPeople((current) =>
@@ -891,7 +938,7 @@ export function MeetupPlanner() {
             </div>
 
             <div className="toast" aria-live="polite">
-              {toast}
+              {toast || (isRefiningRoutes ? "駅すぱあとで経路を確認しています..." : "")}
             </div>
 
             {candidates.length > 0 ? (
@@ -1237,6 +1284,103 @@ function calculateCandidates(state: AppState) {
   }
 
   return candidates.sort((a, b) => a.score - b.score || a.destinationTime - b.destinationTime);
+}
+
+async function refineCandidateWithEkispert(candidate: Candidate, state: AppState) {
+  const departureMinutes = parseClock(state.departureTime);
+  const destination = resolveStationName(state.destination) ?? state.destination.trim();
+  const refinedRoutes: RouteResult[] = [];
+  let usedEkispert = false;
+
+  for (const route of candidate.routes) {
+    const ekispertRoute = await fetchEkispertRoute(
+      route.person.origin,
+      candidate.station,
+      state.departureTime
+    );
+
+    if (ekispertRoute) {
+      usedEkispert = true;
+      const path = ekispertRoute.path;
+      if (
+        !candidate.isDirectDestination &&
+        routePassesDestinationBeforeMeetup(path, destination)
+      ) {
+        return null;
+      }
+
+      refinedRoutes.push({
+        ...route,
+        duration: ekispertRoute.duration,
+        arrivalTime: departureMinutes + ekispertRoute.duration,
+        path,
+        lines: ekispertRoute.lines.map(toLineMetaFromEkispert)
+      });
+    } else {
+      refinedRoutes.push(route);
+    }
+  }
+
+  const onwardEkispertRoute = candidate.isDirectDestination
+    ? null
+    : await fetchEkispertRoute(candidate.station, destination, state.departureTime);
+
+  const gatherTime = Math.max(...refinedRoutes.map((route) => route.arrivalTime));
+  const onwardDuration = onwardEkispertRoute?.duration ?? candidate.onwardDuration;
+  const onwardPath = onwardEkispertRoute?.path ?? candidate.onwardPath;
+  const onwardLines = onwardEkispertRoute
+    ? onwardEkispertRoute.lines.map(toLineMetaFromEkispert)
+    : candidate.onwardLines;
+  const destinationTime = gatherTime + onwardDuration;
+  const waitingTotal = refinedRoutes.reduce((sum, route) => sum + (gatherTime - route.arrivalTime), 0);
+  const durations = refinedRoutes.map((route) => route.duration);
+  const spread = Math.max(...durations) - Math.min(...durations);
+  const score = scoreCandidate(
+    state.priority,
+    destinationTime,
+    waitingTotal,
+    spread,
+    gatherTime,
+    candidate.isDirectDestination
+  );
+
+  return {
+    ...candidate,
+    gatherTime,
+    destinationTime,
+    onwardDuration,
+    onwardPath,
+    onwardLines,
+    waitingTotal,
+    score: usedEkispert || onwardEkispertRoute ? score - 2 : score,
+    routes: refinedRoutes
+  };
+}
+
+async function fetchEkispertRoute(from: string, to: string, departureTime: string) {
+  try {
+    const params = new URLSearchParams({
+      from,
+      to,
+      time: departureTime
+    });
+    const response = await fetch(`/api/routes?${params.toString()}`);
+    if (!response.ok) return null;
+    const data = (await response.json()) as { route?: EkispertRoute | null };
+    if (!data.route || data.route.duration < 0) return null;
+    return data.route;
+  } catch {
+    return null;
+  }
+}
+
+function toLineMetaFromEkispert(line: EkispertRoute["lines"][number]): LineMeta {
+  return {
+    operator: "駅すぱあと",
+    name: line.name,
+    symbol: line.symbol || "路",
+    color: line.color || "#66726D"
+  };
 }
 
 function scoreCandidate(
