@@ -69,6 +69,7 @@ type LiffLike = {
   isInClient: () => boolean;
   isLoggedIn: () => boolean;
   login: (options?: { redirectUri?: string }) => void;
+  getProfile: () => Promise<{ displayName: string }>;
   isApiAvailable: (apiName: string) => boolean;
   shareTargetPicker: (
     messages: LineMessage[],
@@ -201,7 +202,29 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
   },
   {
     minutes: 3,
-    stations: ["池袋", "小竹向原", "練馬", "石神井公園", "ひばりヶ丘", "所沢", "飯能"]
+    stations: [
+      "池袋",
+      "椎名町",
+      "東長崎",
+      "江古田",
+      "桜台",
+      "練馬",
+      "中村橋",
+      "富士見台",
+      "練馬高野台",
+      "石神井公園",
+      "大泉学園",
+      "保谷",
+      "ひばりヶ丘",
+      "東久留米",
+      "清瀬",
+      "秋津",
+      "所沢",
+      "西所沢",
+      "小手指",
+      "入間市",
+      "飯能"
+    ]
   },
   {
     minutes: 3,
@@ -232,7 +255,27 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
   },
   {
     minutes: 3,
-    stations: ["浅草", "上野", "銀座", "新橋", "表参道", "渋谷"]
+    stations: [
+      "浅草",
+      "田原町",
+      "稲荷町",
+      "上野",
+      "上野広小路",
+      "末広町",
+      "神田",
+      "三越前",
+      "日本橋",
+      "京橋",
+      "銀座",
+      "新橋",
+      "虎ノ門",
+      "溜池山王",
+      "赤坂見附",
+      "青山一丁目",
+      "外苑前",
+      "表参道",
+      "渋谷"
+    ]
   },
   {
     minutes: 3,
@@ -241,6 +284,28 @@ const LINE_NETWORKS: Array<{ stations: string[]; minutes: number }> = [
   {
     minutes: 3,
     stations: ["代々木上原", "表参道", "赤坂", "霞ケ関", "日比谷", "大手町", "西日暮里", "北千住"]
+  },
+  {
+    minutes: 3,
+    stations: [
+      "目黒",
+      "白金台",
+      "白金高輪",
+      "麻布十番",
+      "六本木一丁目",
+      "溜池山王",
+      "永田町",
+      "四ツ谷",
+      "市ケ谷",
+      "飯田橋",
+      "後楽園",
+      "東大前",
+      "本駒込",
+      "駒込",
+      "西ケ原",
+      "王子",
+      "赤羽岩淵"
+    ]
   },
   {
     minutes: 3,
@@ -300,6 +365,18 @@ export function MeetupPlanner() {
         if (!cancelled) {
           setLiffClient(liff);
           setLiffStatus(liff.isInClient() ? "LIFFで起動中" : "Webで起動中");
+        }
+        if (!cancelled && liff.isLoggedIn()) {
+          try {
+            const profile = await liff.getProfile();
+            setPeople((current) =>
+              current.map((person, index) =>
+                index === 0 ? { ...person, name: profile.displayName } : person
+              )
+            );
+          } catch {
+            // Keep the default "自分" label if profile scope isn't available.
+          }
         }
       } catch {
         if (!cancelled) {
@@ -456,13 +533,9 @@ export function MeetupPlanner() {
             <div className="section-label">現在地</div>
             {people.map((person, index) => (
               <div className="person-row" key={person.id}>
-                <input
-                  className="input"
-                  aria-label={`${index + 1}人目の名前`}
-                  value={person.name}
-                  onChange={(event) => updatePerson(person.id, { name: event.target.value })}
-                  placeholder="名前"
-                />
+                <div className="person-name">
+                  <span>{person.name || `参加者${index + 1}`}</span>
+                </div>
                 <div className="person-actions">
                   <StationInput
                     id={`origin-${person.id}`}
@@ -675,6 +748,11 @@ function normalizeStation(value: string) {
   return value.trim().toLocaleLowerCase("ja-JP").replace(/駅$/u, "");
 }
 
+function resolveStationName(value: string) {
+  const normalized = normalizeStation(value);
+  return stationNames.find((station) => normalizeStation(station) === normalized) ?? null;
+}
+
 function toEdges(stations: string[], minutes: number): Array<[string, string, number]> {
   return stations.slice(0, -1).map((station, index) => [station, stations[index + 1], minutes]);
 }
@@ -694,14 +772,14 @@ function buildGraph(edges: Array<[string, string, number]>) {
 
 function validateState(state: AppState) {
   if (!state.destination.trim()) return "行き先を入力してください。";
-  if (!graph.has(state.destination.trim())) return `行き先「${state.destination}」は現在の駅ネットワークにありません。`;
+  if (!resolveStationName(state.destination)) return `行き先「${state.destination}」は現在の駅ネットワークにありません。`;
   if (!state.departureTime) return "出発時刻を入力してください。";
   if (state.people.length === 0) return "参加者を1人以上入力してください。";
 
   const emptyPerson = state.people.find((person) => !person.name.trim() || !person.origin.trim());
   if (emptyPerson) return "参加者の名前と現在地を入力してください。";
 
-  const unknownOrigin = state.people.find((person) => !graph.has(person.origin.trim()));
+  const unknownOrigin = state.people.find((person) => !resolveStationName(person.origin));
   if (unknownOrigin) return `現在地「${unknownOrigin.origin}」は現在の駅ネットワークにありません。`;
 
   return "";
@@ -709,11 +787,11 @@ function validateState(state: AppState) {
 
 function calculateCandidates(state: AppState) {
   const departureMinutes = parseClock(state.departureTime);
-  const destination = state.destination.trim();
+  const destination = resolveStationName(state.destination) ?? state.destination.trim();
   const cleanPeople = state.people.map((person) => ({
     ...person,
     name: person.name.trim(),
-    origin: person.origin.trim()
+    origin: resolveStationName(person.origin) ?? person.origin.trim()
   }));
   const routeMaps = cleanPeople.map((person) => dijkstra(person.origin));
   const destinationRoutes = dijkstra(destination);
