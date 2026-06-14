@@ -55,6 +55,7 @@ type Candidate = {
   transferTotal: number;
   score: number;
   routes: RouteResult[];
+  directRoutes?: RouteResult[];
 };
 
 type LineMeta = {
@@ -1507,7 +1508,14 @@ async function buildEkispertCandidateSeeds(baseCandidates: Candidate[], state: A
   });
   const meetupStations = pickEkispertMeetupStations(availableDirectRoutes, destination, cleanPeople);
   const meetupCandidates = meetupStations.map((station) =>
-    buildPendingCandidate(station, destination, cleanPeople, departureMinutes, state.priority)
+    buildPendingCandidate(
+      station,
+      destination,
+      cleanPeople,
+      departureMinutes,
+      state.priority,
+      directCandidate.routes
+    )
   );
 
   return [directCandidate, ...meetupCandidates].slice(0, EKISPERT_MEETUP_CANDIDATE_LIMIT);
@@ -1564,7 +1572,8 @@ function buildCandidateFromKnownRoutes({
     waitingTotal,
     transferTotal,
     score,
-    routes: routeResults
+    routes: routeResults,
+    directRoutes: routeResults
   };
 }
 
@@ -1573,7 +1582,8 @@ function buildPendingCandidate(
   destination: string,
   people: Person[],
   departureMinutes: number,
-  priority: Priority
+  priority: Priority,
+  directRoutes?: RouteResult[]
 ): Candidate {
   const routes = people.map((person) => ({
     person,
@@ -1615,7 +1625,8 @@ function buildPendingCandidate(
     waitingTotal: 0,
     transferTotal: 0,
     score: scoreCandidate(priority, departureMinutes, 0, 0, departureMinutes, false, 0),
-    routes
+    routes,
+    directRoutes
   };
 }
 
@@ -1701,6 +1712,14 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
   const onwardLegs = onwardEkispertRoute
     ? onwardEkispertRoute.legs
     : candidate.onwardLegs;
+
+  if (
+    !candidate.isDirectDestination &&
+    isUnnaturalDetourCandidate(candidate, refinedRoutes, onwardDuration)
+  ) {
+    return null;
+  }
+
   const destinationTime = gatherTime + onwardDuration;
   const waitingTotal = refinedRoutes.reduce((sum, route) => sum + (gatherTime - route.arrivalTime), 0);
   const durations = refinedRoutes.map((route) => route.duration);
@@ -1735,6 +1754,31 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
 
 function isPendingRoute(route: RouteResult) {
   return route.legs.length === 0 || route.legs.some((leg) => leg.lineName === "経路確認中");
+}
+
+function isUnnaturalDetourCandidate(
+  candidate: Candidate,
+  refinedRoutes: RouteResult[],
+  onwardDuration: number
+) {
+  if (!candidate.directRoutes || candidate.directRoutes.length === 0) return false;
+
+  return refinedRoutes.some((route) => {
+    const directRoute = candidate.directRoutes?.find(
+      (direct) => direct.person.id === route.person.id
+    );
+    if (!directRoute || directRoute.duration <= 0) return false;
+
+    const stationIsOnDirectRoute = directRoute.path
+      .map(normalizeStation)
+      .includes(normalizeStation(candidate.station));
+    const combinedDuration = route.duration + onwardDuration;
+    const absoluteDetour = combinedDuration - directRoute.duration;
+    const relativeDetour = combinedDuration / directRoute.duration;
+
+    if (!stationIsOnDirectRoute && absoluteDetour > 6) return true;
+    return absoluteDetour > 10 && relativeDetour > 1.35;
+  });
 }
 
 async function fetchEkispertRoute(from: string, to: string, departureTime: string, priority: Priority) {
