@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test tests/recommendation-detour.test.mjs"
   },
   "dependencies": {
     "@line/liff": "2.29.0",

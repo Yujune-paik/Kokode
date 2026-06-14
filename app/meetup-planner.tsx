@@ -56,6 +56,7 @@ type Candidate = {
   score: number;
   routes: RouteResult[];
   directRoutes?: RouteResult[];
+  reasons: string[];
 };
 
 type LineMeta = {
@@ -660,6 +661,7 @@ const majorHubStations = [
   "大宮",
   "北千住"
 ];
+const largeTerminalStations = ["大手町", "池袋", "新宿", "渋谷", "東京"];
 
 export function MeetupPlanner() {
   const [destination, setDestination] = useState(DEFAULT_STATE.destination);
@@ -1007,6 +1009,16 @@ export function MeetupPlanner() {
                         <strong>{formatClock(candidate.destinationTime)}ごろ</strong>
                       </div>
                     </div>
+
+                    {candidate.reasons.length > 0 ? (
+                      <div className="reason-list" aria-label="おすすめ理由">
+                        {candidate.reasons.map((reason) => (
+                          <span className="reason-chip" key={reason}>
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
 
                     <div className="route-list">
                       {candidate.routes.map((route) => (
@@ -1423,7 +1435,8 @@ function calculateFallbackCandidates(state: AppState) {
       waitingTotal,
       transferTotal,
       score,
-      routes
+      routes,
+      reasons: buildFallbackReasons(isDirectDestination, onwardDuration)
     });
   }
 
@@ -1467,7 +1480,8 @@ function buildDirectDestinationCandidate(
     waitingTotal: 0,
     transferTotal: 0,
     score: scoreCandidate(priority, departureMinutes, 0, 0, departureMinutes, true, 0),
-    routes
+    routes,
+    reasons: ["現地集合なら集合後の移動がありません"]
   };
 }
 
@@ -1573,7 +1587,8 @@ function buildCandidateFromKnownRoutes({
     transferTotal,
     score,
     routes: routeResults,
-    directRoutes: routeResults
+    directRoutes: routeResults,
+    reasons: ["現地集合なら集合後の移動がありません"]
   };
 }
 
@@ -1626,14 +1641,15 @@ function buildPendingCandidate(
     transferTotal: 0,
     score: scoreCandidate(priority, departureMinutes, 0, 0, departureMinutes, false, 0),
     routes,
-    directRoutes
+    directRoutes,
+    reasons: ["駅すぱあとで目的地方向への自然さを確認しています"]
   };
 }
 
 function pickEkispertMeetupStations(routes: EkispertRoute[], destination: string, people: Person[]) {
   const origins = new Set(people.map((person) => normalizeStation(person.origin)));
   const destinationKey = normalizeStation(destination);
-  const scoredStations = new Map<string, number>();
+  const scoredStations = new Map<string, { score: number; count: number }>();
 
   for (const route of routes) {
     const path = route.path.filter(Boolean);
@@ -1642,15 +1658,25 @@ function pickEkispertMeetupStations(routes: EkispertRoute[], destination: string
     path.forEach((station, index) => {
       const normalized = normalizeStation(station);
       if (!normalized || normalized === destinationKey || origins.has(normalized)) return;
-      const midpointScore = 1 - Math.abs(index / denominator - 0.6);
-      const hubScore = majorHubStations.some((hub) => normalizeStation(hub) === normalized) ? 4 : 0;
-      const current = scoredStations.get(station) ?? 0;
-      scoredStations.set(station, current + 1 + midpointScore + hubScore);
+      const progress = index / denominator;
+      const destinationDirectionScore = progress * 5;
+      const convergenceScore = progress >= 0.35 ? 2 : 0;
+      const terminalPenalty = isLargeTerminalStation(station) ? -3 : 0;
+      const hubScore =
+        majorHubStations.some((hub) => normalizeStation(hub) === normalized) &&
+        !isLargeTerminalStation(station)
+          ? 1
+          : 0;
+      const current = scoredStations.get(station) ?? { score: 0, count: 0 };
+      scoredStations.set(station, {
+        count: current.count + 1,
+        score: current.score + destinationDirectionScore + convergenceScore + terminalPenalty + hubScore
+      });
     });
   }
 
   return Array.from(scoredStations.entries())
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1].count - a[1].count || b[1].score - a[1].score)
     .map(([station]) => station)
     .slice(0, EKISPERT_MEETUP_CANDIDATE_LIMIT - 1);
 }
@@ -1727,15 +1753,19 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
   const transferTotal =
     refinedRoutes.reduce((sum, route) => sum + route.transferCount, 0) +
     (onwardEkispertRoute?.transferCount ?? 0);
-  const score = scoreCandidate(
-    state.priority,
+  const recommendation = evaluateRecommendationScore({
+    candidate,
+    priority: state.priority,
+    departureMinutes,
     destinationTime,
     waitingTotal,
     spread,
     gatherTime,
-    candidate.isDirectDestination,
-    transferTotal
-  );
+    transferTotal,
+    refinedRoutes,
+    onwardDuration,
+    onwardLegs
+  });
 
   return {
     ...candidate,
@@ -1747,8 +1777,9 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
     onwardLegs,
     waitingTotal,
     transferTotal,
-    score: usedEkispert || onwardEkispertRoute ? score - 2 : score,
-    routes: refinedRoutes
+    score: usedEkispert || onwardEkispertRoute ? recommendation.score - 2 : recommendation.score,
+    routes: refinedRoutes,
+    reasons: recommendation.reasons
   };
 }
 
@@ -1779,6 +1810,176 @@ function isUnnaturalDetourCandidate(
     if (!stationIsOnDirectRoute && absoluteDetour > 6) return true;
     return absoluteDetour > 10 && relativeDetour > 1.35;
   });
+}
+
+function evaluateRecommendationScore({
+  candidate,
+  priority,
+  departureMinutes,
+  destinationTime,
+  waitingTotal,
+  spread,
+  gatherTime,
+  transferTotal,
+  refinedRoutes,
+  onwardDuration,
+  onwardLegs
+}: {
+  candidate: Candidate;
+  priority: Priority;
+  departureMinutes: number;
+  destinationTime: number;
+  waitingTotal: number;
+  spread: number;
+  gatherTime: number;
+  transferTotal: number;
+  refinedRoutes: RouteResult[];
+  onwardDuration: number;
+  onwardLegs: RouteLeg[];
+}) {
+  const destinationDirectionScore = destinationDirectionPenalty(candidate, refinedRoutes, onwardDuration);
+  const afterMeetingTogetherScore = afterMeetingTogetherPenalty(candidate, onwardLegs);
+  const stationSimplicityScore = stationSimplicityPenalty(candidate.station);
+  const arrivalTimeScore = destinationTime - departureMinutes;
+  const transferScore = transferTotal * 8;
+  const waitingScore = waitingTotal;
+  const fairnessScore = spread;
+  const priorityAdjustment =
+    priority === "fast"
+      ? arrivalTimeScore * 0.18
+      : priority === "fair"
+        ? fairnessScore * 0.25 + waitingScore * 0.2
+        : transferScore * 0.12;
+  const directBonus = candidate.isDirectDestination ? -4 : 0;
+  const score =
+    fairnessScore * 0.15 +
+    transferScore * 0.15 +
+    waitingScore * 0.1 +
+    arrivalTimeScore * 0.15 +
+    destinationDirectionScore * 0.2 +
+    afterMeetingTogetherScore * 0.15 +
+    stationSimplicityScore * 0.1 +
+    priorityAdjustment +
+    directBonus;
+
+  return {
+    score,
+    reasons: buildRecommendationReasons(
+      candidate,
+      refinedRoutes,
+      onwardDuration,
+      onwardLegs,
+      destinationDirectionScore,
+      afterMeetingTogetherScore,
+      stationSimplicityScore
+    )
+  };
+}
+
+function destinationDirectionPenalty(
+  candidate: Candidate,
+  refinedRoutes: RouteResult[],
+  onwardDuration: number
+) {
+  if (candidate.isDirectDestination) return 0;
+  if (!candidate.directRoutes || candidate.directRoutes.length === 0) return 12;
+
+  const penalties = refinedRoutes.map((route) => {
+    const directRoute = candidate.directRoutes?.find((direct) => direct.person.id === route.person.id);
+    if (!directRoute || directRoute.duration <= 0) return 10;
+
+    const normalizedCandidate = normalizeStation(candidate.station);
+    const directPath = directRoute.path.map(normalizeStation);
+    const directIndex = directPath.indexOf(normalizedCandidate);
+    const combinedDuration = route.duration + onwardDuration;
+    const detour = Math.max(0, combinedDuration - directRoute.duration);
+
+    if (directIndex >= 0) {
+      const progress = directIndex / Math.max(1, directPath.length - 1);
+      const earlyPenalty = progress < 0.3 ? 5 : 0;
+      const nearDestinationBonus = progress >= 0.65 ? -8 : progress >= 0.45 ? -4 : 0;
+      return Math.max(-10, detour * 0.4 + earlyPenalty + nearDestinationBonus);
+    }
+
+    return 18 + detour * 1.5;
+  });
+
+  const average = penalties.reduce((sum, penalty) => sum + penalty, 0) / penalties.length;
+  const allDirectPathsIncludeStation = refinedRoutes.every((route) => {
+    const directRoute = candidate.directRoutes?.find((direct) => direct.person.id === route.person.id);
+    return directRoute?.path.map(normalizeStation).includes(normalizeStation(candidate.station));
+  });
+
+  return allDirectPathsIncludeStation ? average - 6 : average + 18;
+}
+
+function afterMeetingTogetherPenalty(candidate: Candidate, onwardLegs: RouteLeg[]) {
+  if (candidate.isDirectDestination) return -8;
+  const displayLegs = mergeConsecutiveLegs(onwardLegs);
+  if (displayLegs.length === 0) return 8;
+  const transferPenalty = Math.max(0, displayLegs.length - 1) * 8;
+  const sameTrainBonus = displayLegs.length === 1 ? -12 : 0;
+  const shortOnwardBonus = displayLegs.reduce((sum, leg) => sum + leg.duration, 0) <= 12 ? -6 : 0;
+  return transferPenalty + sameTrainBonus + shortOnwardBonus;
+}
+
+function stationSimplicityPenalty(station: string) {
+  if (isLargeTerminalStation(station)) return 12;
+  if (majorHubStations.some((hub) => normalizeStation(hub) === normalizeStation(station))) return 5;
+  return 0;
+}
+
+function isLargeTerminalStation(station: string) {
+  return largeTerminalStations.some((terminal) => normalizeStation(terminal) === normalizeStation(station));
+}
+
+function buildRecommendationReasons(
+  candidate: Candidate,
+  refinedRoutes: RouteResult[],
+  onwardDuration: number,
+  onwardLegs: RouteLeg[],
+  destinationDirectionScore: number,
+  afterMeetingTogetherScore: number,
+  stationSimplicityScore: number
+) {
+  const reasons: string[] = [];
+  const directRouteMatches = refinedRoutes.filter((route) => {
+    const directRoute = candidate.directRoutes?.find((direct) => direct.person.id === route.person.id);
+    return directRoute?.path.map(normalizeStation).includes(normalizeStation(candidate.station));
+  }).length;
+  const displayLegs = mergeConsecutiveLegs(onwardLegs);
+
+  if (candidate.isDirectDestination) {
+    reasons.push("現地集合なら集合後の移動がありません");
+  } else if (directRouteMatches === refinedRoutes.length) {
+    reasons.push("2人の経路が目的地方向に自然に合流します");
+  } else if (destinationDirectionScore >= 18) {
+    reasons.push("出発地同士の中間ですが、目的地方向から外れるため優先度を下げました");
+  } else {
+    reasons.push("乗換はありますが、目的地方向へ進みやすい候補です");
+  }
+
+  if (!candidate.isDirectDestination && onwardDuration <= 12) {
+    reasons.push("目的地の手前で合流できます");
+  }
+
+  if (!candidate.isDirectDestination && afterMeetingTogetherScore < 0) {
+    reasons.push("合流後に同じ方向へ一緒に向かいやすい候補です");
+  } else if (!candidate.isDirectDestination && displayLegs.length > 1) {
+    reasons.push("合流後の乗換があるため少し優先度を下げています");
+  }
+
+  if (stationSimplicityScore >= 10) {
+    reasons.push("駅が大きいため待ち合わせしやすさは控えめです");
+  }
+
+  return reasons.slice(0, 3);
+}
+
+function buildFallbackReasons(isDirectDestination: boolean, onwardDuration: number) {
+  if (isDirectDestination) return ["現地集合なら集合後の移動がありません"];
+  if (onwardDuration <= 12) return ["目的地の手前で合流できます"];
+  return ["目的地方向へ進みやすい候補です"];
 }
 
 async function fetchEkispertRoute(from: string, to: string, departureTime: string, priority: Priority) {
