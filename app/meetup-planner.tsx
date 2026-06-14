@@ -1794,6 +1794,13 @@ function isUnnaturalDetourCandidate(
 ) {
   if (!candidate.directRoutes || candidate.directRoutes.length === 0) return false;
 
+  if (isLargeTerminalStation(candidate.station) && onwardDuration > 12) {
+    const progresses = directRouteProgresses(candidate, refinedRoutes);
+    const averageProgress =
+      progresses.reduce((sum, progress) => sum + progress, 0) / Math.max(1, progresses.length);
+    if (progresses.length < refinedRoutes.length || averageProgress < 0.65) return true;
+  }
+
   return refinedRoutes.some((route) => {
     const directRoute = candidate.directRoutes?.find(
       (direct) => direct.person.id === route.person.id
@@ -1810,6 +1817,21 @@ function isUnnaturalDetourCandidate(
     if (!stationIsOnDirectRoute && absoluteDetour > 6) return true;
     return absoluteDetour > 10 && relativeDetour > 1.35;
   });
+}
+
+function directRouteProgresses(candidate: Candidate, refinedRoutes: RouteResult[]) {
+  if (!candidate.directRoutes) return [];
+
+  return refinedRoutes
+    .map((route) => {
+      const directRoute = candidate.directRoutes?.find((direct) => direct.person.id === route.person.id);
+      if (!directRoute) return null;
+      const directPath = directRoute.path.map(normalizeStation);
+      const directIndex = directPath.indexOf(normalizeStation(candidate.station));
+      if (directIndex < 0) return null;
+      return directIndex / Math.max(1, directPath.length - 1);
+    })
+    .filter((progress): progress is number => progress !== null);
 }
 
 function evaluateRecommendationScore({
@@ -1924,7 +1946,7 @@ function afterMeetingTogetherPenalty(candidate: Candidate, onwardLegs: RouteLeg[
 }
 
 function stationSimplicityPenalty(station: string) {
-  if (isLargeTerminalStation(station)) return 12;
+  if (isLargeTerminalStation(station)) return 48;
   if (majorHubStations.some((hub) => normalizeStation(hub) === normalizeStation(station))) return 5;
   return 0;
 }
@@ -1951,6 +1973,8 @@ function buildRecommendationReasons(
 
   if (candidate.isDirectDestination) {
     reasons.push("現地集合なら集合後の移動がありません");
+  } else if (isLargeTerminalStation(candidate.station) && onwardDuration > 12) {
+    reasons.push("駅が大きく目的地手前でもないため、待ち合わせ候補としては控えめです");
   } else if (directRouteMatches === refinedRoutes.length) {
     reasons.push("2人の経路が目的地方向に自然に合流します");
   } else if (destinationDirectionScore >= 18) {

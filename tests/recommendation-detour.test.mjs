@@ -38,9 +38,24 @@ function directionPenalty(candidate, directRoutes, routeDurations, onwardDuratio
 function candidateScore(candidate, directRoutes, routeDurations, onwardDuration, onwardTransfers = 0) {
   const destinationDirectionScore = directionPenalty(candidate, directRoutes, routeDurations, onwardDuration);
   const afterMeetingTogetherScore = onwardTransfers * 8 + (onwardDuration <= 12 ? -6 : 0);
-  const stationSimplicityScore = isLargeTerminalStation(candidate) ? 12 : 0;
+  const stationSimplicityScore = isLargeTerminalStation(candidate) ? 48 : 0;
 
   return destinationDirectionScore * 0.2 + afterMeetingTogetherScore * 0.15 + stationSimplicityScore * 0.1;
+}
+
+function isUnnaturalLargeTerminal(candidate, directRoutes, onwardDuration) {
+  if (!isLargeTerminalStation(candidate) || onwardDuration <= 12) return false;
+
+  const progresses = directRoutes
+    .map((route) => {
+      const path = route.path.map(normalizeStation);
+      const index = path.indexOf(normalizeStation(candidate));
+      return index < 0 ? null : index / Math.max(1, path.length - 1);
+    })
+    .filter((progress) => progress !== null);
+  const averageProgress = progresses.reduce((sum, progress) => sum + progress, 0) / Math.max(1, progresses.length);
+
+  return progresses.length < directRoutes.length || averageProgress < 0.65;
 }
 
 test("東大前・外苑前から練馬高野台へ向かう場合、大手町を上位にしない", () => {
@@ -100,4 +115,22 @@ test("東大前・外苑前から練馬高野台へ向かう場合、大手町�
   assert.notEqual(ranked[0].station, "大手町");
   assert.ok(["練馬", "小竹向原", "飯田橋"].includes(ranked[0].station));
   assert.ok(ranked.findIndex((candidate) => candidate.station === "大手町") > 0);
+});
+
+test("大手町が直行経路上に含まれても、目的地手前でなければ不自然候補として扱う", () => {
+  const directRoutes = [
+    {
+      person: "自分",
+      duration: 35,
+      path: ["東大前", "後楽園", "大手町", "飯田橋", "小竹向原", "練馬", "練馬高野台"]
+    },
+    {
+      person: "相手",
+      duration: 38,
+      path: ["外苑前", "赤坂見附", "大手町", "飯田橋", "小竹向原", "練馬", "練馬高野台"]
+    }
+  ];
+
+  assert.equal(isUnnaturalLargeTerminal("大手町", directRoutes, 30), true);
+  assert.equal(isUnnaturalLargeTerminal("練馬", directRoutes, 4), false);
 });
