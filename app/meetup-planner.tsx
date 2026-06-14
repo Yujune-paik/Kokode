@@ -1658,6 +1658,7 @@ function pickEkispertMeetupStations(routes: EkispertRoute[], destination: string
     path.forEach((station, index) => {
       const normalized = normalizeStation(station);
       if (!normalized || normalized === destinationKey || origins.has(normalized)) return;
+      if (isLargeTerminalStation(station)) return;
       const progress = index / denominator;
       const destinationDirectionScore = progress * 5;
       const convergenceScore = progress >= 0.35 ? 2 : 0;
@@ -1721,13 +1722,17 @@ async function refineCandidateWithEkispert(candidate: Candidate, state: AppState
         transferCount: ekispertRoute.transferCount
       });
     } else {
-      refinedRoutes.push(route);
+      return null;
     }
   }
 
   const onwardEkispertRoute = candidate.isDirectDestination
     ? null
     : await fetchEkispertRoute(candidate.station, destination, state.departureTime, state.priority);
+
+  if (!candidate.isDirectDestination && !onwardEkispertRoute) {
+    return null;
+  }
 
   const gatherTime = Math.max(...refinedRoutes.map((route) => route.arrivalTime));
   const onwardDuration = onwardEkispertRoute?.duration ?? candidate.onwardDuration;
